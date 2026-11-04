@@ -20,5 +20,6 @@ services:
 networks:
   default:
     driver: bridge
+    enable_ipv6: true
     driver_opts:
       com.docker.network.driver.mtu: 1280

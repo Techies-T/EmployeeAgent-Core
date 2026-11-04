@@ -260,6 +260,16 @@ const App = () => {
         init();
     }, [fetchConfig, checkSession]);
 
+    // Listen to dynamic plugin install/uninstall events so Dock and Capabilities update immediately
+    useEffect(() => {
+        const handlePluginsUpdated = () => {
+            fetchConfig(1);
+            checkSession(true, false);
+        };
+        window.addEventListener('plugins-updated', handlePluginsUpdated);
+        return () => window.removeEventListener('plugins-updated', handlePluginsUpdated);
+    }, [fetchConfig, checkSession]);
+
     const userId = user?.id;
 
     // ZTA: 30分無操作ソフトロック（最大N回）& 強制ログアウト監視

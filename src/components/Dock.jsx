@@ -102,17 +102,6 @@ const Dock = ({ onAppClick, windows = [], user, config, customSkills = [] }) => 
             )
         },
         {
-            id: 'live-concierge', name: 'Live Concierge', icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: '28px', height: '28px', color: '#ec4899' }}>
-                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                    <line x1="12" y1="19" x2="12" y2="22" />
-                    <circle cx="12" cy="7" r="1" fill="currentColor" />
-                    <path d="M8 22h8" />
-                </svg>
-            )
-        },
-        {
             id: 'deep-research', name: 'DeepResearch', icon: (
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: '28px', height: '28px', color: '#6366f1' }}>
                     <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
@@ -125,6 +114,17 @@ const Dock = ({ onAppClick, windows = [], user, config, customSkills = [] }) => 
                     <line x1="20" y1="14" x2="23" y2="14" />
                     <line x1="1" y1="9" x2="4" y2="9" />
                     <line x1="1" y1="14" x2="4" y2="14" />
+                </svg>
+            )
+        },
+        {
+            id: 'live-concierge', name: 'Live Concierge', icon: (
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: '28px', height: '28px', color: '#ec4899' }}>
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" y1="19" x2="12" y2="22" />
+                    <circle cx="12" cy="7" r="1" fill="currentColor" />
+                    <path d="M8 22h8" />
                 </svg>
             )
         },
@@ -154,7 +154,11 @@ const Dock = ({ onAppClick, windows = [], user, config, customSkills = [] }) => 
     };
 
     const allowedWidgets = user?.allowed_widgets || [];
-    const isAdminUser = user?.role?.includes('admin');
+    const widgetLevels = user?.widget_levels || {};
+    const installedWidgetsList = Array.isArray(config?.installedWidgets) && config.installedWidgets.length > 0
+        ? config.installedWidgets
+        : ['gemini', 'mcp-chat'];
+    const installedIdsSet = new Set(installedWidgetsList.map(w => typeof w === 'string' ? w : w.id));
 
     const dynamicApps = customSkills.map(skill => ({
         id: skill.id,
@@ -168,9 +172,16 @@ const Dock = ({ onAppClick, windows = [], user, config, customSkills = [] }) => 
     const allApps = [...apps, ...dynamicApps];
 
     const visibleApps = allApps.filter(app => {
-        if (isAdminUser) return true; // Admin has full uninhibited access to all apps
-        if (app.id === 'settings') return true; // Settings is universally available for profile management
-        if (app.isCustom) return true; // Custom skills are visible to everyone
+        if (app.id === 'settings') return true; // Settings is universally available
+        if (app.isCustom) return true;
+        // 1. Check if widget is installed in EmployeeAgent-Core plugin manager
+        if (installedIdsSet && !installedIdsSet.has(app.id)) {
+            return false;
+        }
+        // 2. Check ZTA PDP permission level
+        if (widgetLevels[app.id] === 'none') {
+            return false;
+        }
         const prefix = 'app:';
         return allowedWidgets.includes('*') || allowedWidgets.includes(`${prefix}${app.id}`);
     });

@@ -33,7 +33,7 @@ const renderContextUsage = (usage) => {
 };
 
 // メモ化された個別チャットメッセージコンポーネント（親コンポーネントのタイマー更新等による再レンダリング・iframe再マウントを完全抑止）
-const ChatMessageItem = React.memo(({ msg, index, isCopied, onCopy, onReuse, onSaveToKnowledge, onOpen }) => {
+const ChatMessageItem = React.memo(({ msg, index, isCopied, onCopy, onReuse, onSaveToKnowledge, hasKnowledgeStoreCapability, onOpen }) => {
     // Markdown components の参照同一性を保持し、iframeのアンマウント・再マウントを抑止
     const markdownComponents = useMemo(() => ({
         code({ node, inline, className, children, ...props }) {
@@ -42,11 +42,11 @@ const ChatMessageItem = React.memo(({ msg, index, isCopied, onCopy, onReuse, onS
             const isHtmlBlock = (!inline && match && (match[1] === 'html' || match[1] === 'htm')) ||
                                 (!inline && (codeStr.startsWith('<!DOCTYPE html') || codeStr.includes('<html') || codeStr.startsWith('<div class=') || codeStr.startsWith('<div id=') || codeStr.includes('cdn.tailwindcss.com')));
             if (isHtmlBlock) {
-                return <HtmlPreviewCodeBlock code={codeStr} onSaveToKnowledge={onSaveToKnowledge} onOpen={onOpen} />;
+                return <HtmlPreviewCodeBlock code={codeStr} onSaveToKnowledge={hasKnowledgeStoreCapability ? onSaveToKnowledge : undefined} onOpen={onOpen} />;
             }
             return <code className={className} {...props}>{children}</code>;
         }
-    }), [onSaveToKnowledge, onOpen]);
+    }), [onSaveToKnowledge, hasKnowledgeStoreCapability, onOpen]);
 
     return (
         <div className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -120,6 +120,19 @@ const ChatMessageItem = React.memo(({ msg, index, isCopied, onCopy, onReuse, onS
                     </div>
                 )}
                 {msg.role === 'model' && renderContextUsage(msg.usage)}
+                {msg.role === 'model' && hasKnowledgeStoreCapability && onSaveToKnowledge && (
+                    <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center justify-end">
+                        <button
+                            type="button"
+                            onClick={() => onSaveToKnowledge(msg.text)}
+                            className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-2xs"
+                            title="この分析結果をナレッジベース（経営会議ブリーフィング）に登録して全社・部門Podへ事前共有します"
+                        >
+                            <span>📚</span>
+                            <span>経営会議ブリーフィング（ナレッジ）に登録</span>
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -303,8 +316,16 @@ const TaskProgressIndicator = React.memo(({ taskId, onComplete, onError, onCance
     );
 });
 
-const McpChat = ({ onOpen }) => {
+const McpChat = ({ onOpen, capabilities = [], initialBriefingReport = null }) => {
     const [messages, setMessages] = useState([]);
+    const [activeBriefingReport, setActiveBriefingReport] = useState(initialBriefingReport || null);
+    const hasKnowledgeStoreCapability = Array.isArray(capabilities) && capabilities.includes('capability:knowledge-store');
+
+    useEffect(() => {
+        if (initialBriefingReport) {
+            setActiveBriefingReport(initialBriefingReport);
+        }
+    }, [initialBriefingReport]);
     const [previousInteractionId, setPreviousInteractionId] = useState(null);
     const [environmentId, setEnvironmentId] = useState(null);
     const [input, setInput] = useState('');
@@ -548,12 +569,16 @@ const McpChat = ({ onOpen }) => {
         }
 
         try {
+            const enrichedMessage = activeBriefingReport
+                ? `【事前共有ブリーフィングレポート参照: ${activeBriefingReport.title}】\n${(activeBriefingReport.content || '').slice(0, 12000)}\n\n---\n【MCPデータ分析・単一ドメイン深掘り指示】\n${textToSend}`
+                : textToSend;
+
             // SEP-2663 Tasks 拡張機能: 即時非同期タスク作成
             const response = await fetch('/api/mcp/tasks', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    message: textToSend,
+                    message: enrichedMessage,
                     previous_interaction_id: previousInteractionId,
                     environment_id: environmentId,
                     pipelineDomain: selectedDomain === 'auto' ? undefined : selectedDomain,
@@ -781,6 +806,7 @@ const McpChat = ({ onOpen }) => {
                                 onCopy={handleCopy}
                                 onReuse={handleReusePrompt}
                                 onSaveToKnowledge={handleSaveToKnowledge}
+                                hasKnowledgeStoreCapability={hasKnowledgeStoreCapability}
                                 onOpen={onOpen}
                             />
                         ))}
@@ -800,6 +826,41 @@ const McpChat = ({ onOpen }) => {
                 {/* Input Area */}
                 <div className="flex-none p-4 bg-white border-t border-gray-200">
                     <div className="w-full max-w-[96%] mx-auto">
+                        {/* Executive Meeting Briefing Context Banner */}
+                        {activeBriefingReport && (
+                            <div className="mb-3 p-3 rounded-xl bg-indigo-50 border border-indigo-200 flex flex-col gap-2 shadow-2xs">
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <span className="px-2 py-0.5 rounded-full bg-indigo-600 text-white text-[10px] font-bold flex-shrink-0">
+                                            📊 事前ブリーフィング引き継ぎ中
+                                        </span>
+                                        <span className="text-xs font-bold text-indigo-950 truncate">
+                                            {activeBriefingReport.title}
+                                        </span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setActiveBriefingReport(null)}
+                                        className="text-[11px] text-indigo-600 hover:text-indigo-900 px-2 py-0.5 rounded bg-white border border-indigo-200 flex-shrink-0"
+                                    >
+                                        解除 ✕
+                                    </button>
+                                </div>
+                                <div className="flex flex-wrap gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setInput('この全社まとめレポートに対し、単一ビジネスドメインの実績データをMCPで深掘り照会し、課題領域の特定および第2四半期(Q2)でアクセルを踏むべき成長ドメインの投資判断レポートを作成してください。');
+                                            inputRef.current?.focus();
+                                        }}
+                                        className="text-[11px] px-2.5 py-1 rounded-lg bg-white hover:bg-indigo-100/70 text-indigo-700 border border-indigo-200 font-medium transition-colors"
+                                    >
+                                        🔍 単一ビジネスドメイン課題 & Q2投資判断をMCPデータで深掘り
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Dynamic Pipeline Domain Selector */}
                         {metaData && metaData.servers && metaData.servers.length > 0 && (
                             <div className="flex items-center gap-1.5 overflow-x-auto mb-2.5 pb-1 scrollbar-thin text-xs">

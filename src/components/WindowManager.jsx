@@ -18,7 +18,8 @@ import DmChat from '../apps/DmChat';
 import LiveConcierge from '../apps/LiveConcierge';
 
 
-const WindowManager = ({ windows, onFocus, onClose, onMinimize, onOpen, onUpdate, user }) => {
+const WindowManager = ({ windows, onFocus, onClose, onMinimize, onOpen, onUpdate, user, config }) => {
+    const capabilities = config?.capabilities || [];
     const renderApp = (win) => {
         const type = win.type;
         console.log("WindowManager: renderApp", type);
@@ -26,14 +27,14 @@ const WindowManager = ({ windows, onFocus, onClose, onMinimize, onOpen, onUpdate
             case 'calculator': return <Calculator />;
             case 'notes': return <Notes />;
             case 'finder': return <Finder user={user} onOpen={onOpen} />;
-            case 'gemini': return <Gemini user={user} />;
+            case 'gemini': return <Gemini user={user} capabilities={capabilities} onOpen={onOpen} {...win.props} />;
             case 'calendar': return <Calendar />;
             case 'settings': return <SystemSettings user={user} />;
             case 'browser': return <Browser {...win.props} />;
             case 'html-editor': return <HtmlEditor onOpen={onOpen} {...win.props} />;
-            case 'deep-research': return <DeepResearch onOpen={onOpen} />;
-            case 'knowledge-base': return <KnowledgeBase onOpen={onOpen} user={user} {...win.props} />;
-            case 'mcp-chat': return <McpChat onOpen={onOpen} />;
+            case 'deep-research': return <DeepResearch onOpen={onOpen} capabilities={capabilities} />;
+            case 'knowledge-base': return <KnowledgeBase user={user} onOpen={onOpen} capabilities={capabilities} {...win.props} />;
+            case 'mcp-chat': return <McpChat user={user} capabilities={capabilities} onOpen={onOpen} {...win.props} />;
             case 'live-concierge': return <LiveConcierge onOpen={onOpen} user={user} {...win.props} />;
             case 'virtual-office': return <VirtualOffice onOpen={onOpen} user={user} />;
             case 'dm-chat': return <DmChat {...win.props} />;

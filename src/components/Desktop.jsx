@@ -86,7 +86,7 @@ const Desktop = ({ user, onLogout, config }) => {
   }, [notifications]);
 
   // Load installed skills
-  const fetchSkills = async () => {
+  const fetchSkills = React.useCallback(async () => {
     try {
       const res = await fetch('/api/skills');
       if (res.ok) {
@@ -96,14 +96,21 @@ const Desktop = ({ user, onLogout, config }) => {
     } catch (err) {
       console.error('Failed to fetch skills:', err);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchSkills();
+    // Wrap in timeout to avoid "setState synchronously within an effect" warning
+    const timer = setTimeout(() => {
+      fetchSkills();
+    }, 0);
+    
     const handleUpdate = () => fetchSkills();
     window.addEventListener('skills-updated', handleUpdate);
-    return () => window.removeEventListener('skills-updated', handleUpdate);
-  }, []);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('skills-updated', handleUpdate);
+    };
+  }, [fetchSkills]);
 
   // Load window state on mount
   useEffect(() => {
@@ -160,11 +167,16 @@ const Desktop = ({ user, onLogout, config }) => {
 
   const openWindow = React.useCallback((id, type, title, props = {}) => {
     setWindows(prev => {
-      // If window already exists, bring to front and restore if minimized
-      const existing = prev.find(w => w.id === id);
-      if (existing) {
-        const maxZ = Math.max(...prev.map(w => w.zIndex), 0);
-        return prev.map(w => w.id === id ? { ...w, zIndex: maxZ + 1, minimized: false, props: { ...w.props, ...props } } : w);
+      // For app-monitor, always open a new window
+      if (type === 'app-monitor') {
+          id = `app-monitor-${Date.now()}`;
+      } else {
+          // If window already exists, bring to front and restore if minimized
+          const existing = prev.find(w => w.id === id);
+          if (existing) {
+            const maxZ = Math.max(...prev.map(w => w.zIndex), 0);
+            return prev.map(w => w.id === id ? { ...w, zIndex: maxZ + 1, minimized: false, props: { ...w.props, ...props } } : w);
+          }
       }
       // Open new window
       const maxZ = Math.max(...prev.map(w => w.zIndex), 0);
@@ -345,6 +357,7 @@ const Desktop = ({ user, onLogout, config }) => {
         onOpen={openWindow}
         onUpdate={updateWindow} // Pass update handler
         user={user}
+        config={config}
       />
       <Dock
         windows={windows}

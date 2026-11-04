@@ -14,40 +14,11 @@ const UserAvatar = ({ url, name, size = 'w-5 h-5' }) => {
 };
 
 
-const extractHtml = (text) => {
-    if (!text || typeof text !== 'string') return null;
-    const trimmed = text.trim();
-    if (trimmed.startsWith('<!DOCTYPE html>') || trimmed.startsWith('<html') || (trimmed.startsWith('<div') && trimmed.includes('</div>'))) {
-        return trimmed;
-    }
-    const match = text.match(/```html\s*([\s\S]*?)\s*```/i);
-    if (match) {
-        return match[1].trim();
-    }
-    if (trimmed.includes('<script') && trimmed.includes('</script>')) {
-        return trimmed;
-    }
-    return null;
-};
-
-const KnowledgeBase = ({ onOpen }) => {
+const KnowledgeBase = ({ user, onOpen, capabilities = [] }) => {
     const [articles, setArticles] = useState([]);
     const [selectedArticleId, setSelectedArticleId] = useState(null);
     const [selectedTag, setSelectedTag] = useState(null);
     const [isEditing, setIsEditing] = useState(false);
-    const [activeTab, setActiveTab] = useState('auto'); // 'preview' | 'markdown' | 'auto'
-    const [isFullWidth, setIsFullWidth] = useState(false);
-    
-    // Live Concierge で音声解説を開始
-    const openInLiveConcierge = (article) => {
-        if (!article) return;
-        if (onOpen) {
-            onOpen('live-concierge', 'live-concierge', 'Live Concierge', {
-                initialKnowledgeId: article.id,
-                initialKnowledgeTitle: article.title
-            });
-        }
-    };
     
     // Pod states
     const [pods, setPods] = useState([]);
@@ -131,7 +102,6 @@ const KnowledgeBase = ({ onOpen }) => {
 
     const handleSelectArticle = async (article) => {
         setSelectedArticleId(article.id);
-        setActiveTab('auto');
         setEditForm({
             title: article.title,
             content: article.content || '読み込み中...',
@@ -196,40 +166,6 @@ const KnowledgeBase = ({ onOpen }) => {
             }
         } catch (error) {
             console.error("Failed to save article", error);
-        }
-    };
-
-    const handleExportJson = () => {
-        window.open('/api/knowledge/export/download', '_blank');
-    };
-
-    const handleImportJson = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        try {
-            const text = await file.text();
-            const json = JSON.parse(text);
-            const articlesList = json.articles || (Array.isArray(json) ? json : []);
-
-            const res = await fetch('/api/knowledge/import/upload', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ articles: articlesList })
-            });
-
-            if (res.ok) {
-                const data = await res.json();
-                alert(`インポートが完了しました (${data.imported_count} 件成功)`);
-                await fetchArticles(selectedTag, selectedPodId);
-            } else {
-                alert('インポートに失敗しました。フォーマットを確認してください。');
-            }
-        } catch (err) {
-            console.error("Import file parse error", err);
-            alert('JSONファイルの読み込みエラーが発生しました。');
-        } finally {
-            e.target.value = '';
         }
     };
 
@@ -401,26 +337,13 @@ const KnowledgeBase = ({ onOpen }) => {
             <div className="w-64 border-r border-[#333] bg-[#1e1e1e] flex flex-col">
                 <div className="p-3 border-b border-[#333] flex justify-between items-center bg-[#252526]">
                     <h2 className="font-semibold text-sm">Articles</h2>
-                    <div className="flex items-center gap-1.5">
-                        <label title="Import Knowledge Base (JSON)" className="cursor-pointer text-xs bg-[#333] hover:bg-[#444] text-gray-200 px-2 py-1 rounded flex items-center">
-                            📥
-                            <input type="file" accept=".json" onChange={handleImportJson} className="hidden" />
-                        </label>
-                        <button 
-                            onClick={handleExportJson}
-                            className="text-xs bg-[#333] hover:bg-[#444] text-gray-200 px-2 py-1 rounded"
-                            title="Export Knowledge Base (JSON)"
-                        >
-                            📤
-                        </button>
-                        <button 
-                            onClick={handleCreateNew}
-                            className="w-6 h-6 rounded bg-blue-600 hover:bg-blue-500 text-white flex justify-center items-center font-bold"
-                            title="New Article"
-                        >
-                            +
-                        </button>
-                    </div>
+                    <button 
+                        onClick={handleCreateNew}
+                        className="w-6 h-6 rounded bg-blue-600 hover:bg-blue-500 text-white flex justify-center items-center font-bold"
+                        title="New Article"
+                    >
+                        +
+                    </button>
                 </div>
                 <div className="overflow-y-auto flex-1 p-2">
                     {isLoading ? (
@@ -442,12 +365,6 @@ const KnowledgeBase = ({ onOpen }) => {
                                     {(article.content || 'No content').substring(0, 50)}
                                 </div>
                                 <div className="flex gap-1 mt-2.5 flex-wrap">
-                                    {(extractHtml(article.content) || (Array.isArray(article.tags) && article.tags.some(t => /genui|analytics|mcp|dashboard|html/i.test(t)))) && (
-                                        <span className="text-[9px] bg-amber-500/20 border border-amber-500/40 px-1.5 py-0.5 rounded text-amber-300 font-medium flex items-center gap-0.5">
-                                            <span>⚡</span>
-                                            <span>GenUI</span>
-                                        </span>
-                                    )}
                                     {article.pod_id ? (
                                         <span className="text-[9px] bg-indigo-900/40 border border-indigo-700/30 px-1.5 py-0.5 rounded text-indigo-300">
                                             📦 {pods.find(p => p.id === article.pod_id)?.name || '限定Pod'}
@@ -534,164 +451,81 @@ const KnowledgeBase = ({ onOpen }) => {
                     ) : (
                         /* Reader View */
                         <ErrorBoundary>
-                        {(() => {
-                            const genUiHtml = extractHtml(selectedArticle?.content);
-                            const isPreviewMode = (activeTab === 'preview') || (activeTab === 'auto' && !!genUiHtml);
-
-                            return (
-                                <div className={`flex flex-col h-full p-6 md:p-8 ${isFullWidth ? 'max-w-none w-full' : 'max-w-5xl w-full'} mx-auto overflow-y-auto transition-all`}>
-                                    <div className="flex justify-between items-start mb-4">
-                                        <div className="flex-1">
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <h1 className="text-2xl md:text-3xl font-bold text-white tracking-tight">{selectedArticle?.title}</h1>
-                                                {genUiHtml && (
-                                                    <span className="text-xs bg-amber-500/20 border border-amber-500/40 text-amber-300 font-semibold px-2 py-0.5 rounded-full flex items-center gap-1 shadow-sm">
-                                                        <span>⚡</span>
-                                                        <span>AI Analytics</span>
-                                                    </span>
-                                                )}
-                                            </div>
-                                            <div className="flex items-center gap-3 text-xs text-gray-400">
-                                                <UserAvatar url={selectedArticle?.author_avatar} name={selectedArticle?.author_name} size="w-6 h-6" />
-                                                <span className="font-medium">Author: {selectedArticle?.author_name || 'System'}</span>
-                                                <span>•</span>
-                                                <span>{new Date(selectedArticle?.updated_at || Date.now()).toLocaleString()}</span>
-                                            </div>
-                                            <div className="flex gap-2 mt-3 flex-wrap items-center">
-                                                {selectedArticle?.pod_id ? (
-                                                    <span className="text-xs bg-indigo-900/40 border border-indigo-700/40 px-2.5 py-0.5 rounded-full text-indigo-300 shadow-sm font-medium flex items-center gap-1">
-                                                        <span>📦</span>
-                                                        <span>{pods.find(p => p.id === selectedArticle.pod_id)?.name || '限定Pod'}</span>
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-xs bg-gray-800/60 border border-gray-700 px-2.5 py-0.5 rounded-full text-gray-400 shadow-sm font-medium">
-                                                        🌐 共通（パブリック）
-                                                    </span>
-                                                )}
-                                                {Array.isArray(selectedArticle?.tags) && selectedArticle.tags.map(tag => (
-                                                    <span key={tag} className="text-xs bg-[#2a2d2e] border border-[#3c3c3c] px-2.5 py-0.5 rounded-full text-blue-300 shadow-sm cursor-pointer hover:bg-[#333]" onClick={() => setSelectedTag(tag)}>
-                                                        #{tag}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        </div>
-                                        <div className="flex gap-2 ml-4 items-center">
-                                            <button
-                                                type="button"
-                                                onClick={() => openInLiveConcierge(selectedArticle)}
-                                                className="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium shadow flex items-center gap-1.5 transition-colors cursor-pointer"
-                                                title="Live Concierge を起動し、音声でこのレポートの解説を聞く"
-                                            >
-                                                <span>🎙️</span>
-                                                <span>Live解説</span>
-                                            </button>
-                                            <button onClick={() => setIsEditing(true)} className="px-3 py-1.5 text-sm bg-[#37373d] hover:bg-[#4d4d54] text-white rounded shadow transition-colors">
-                                                編集
-                                            </button>
-                                            <button onClick={handleDelete} className="px-3 py-1.5 text-sm bg-red-900/50 hover:bg-red-800 text-red-100 rounded border border-red-800/50 transition-colors">
-                                                削除
-                                            </button>
-                                        </div>
+                        <div className="flex flex-col h-full p-8 max-w-4xl mx-auto w-full overflow-y-auto">
+                            <div className="flex justify-between items-start mb-6">
+                                <div className="flex-1">
+                                    <h1 className="text-3xl font-bold text-white mb-3 tracking-tight">{selectedArticle?.title}</h1>
+                                    <div className="flex items-center gap-3 text-xs text-gray-400">
+                                        <UserAvatar url={selectedArticle?.author_avatar} name={selectedArticle?.author_name} size="w-6 h-6" />
+                                        <span className="font-medium">Author: {selectedArticle?.author_name || 'System'}</span>
+                                        <span>•</span>
+                                        <span>{new Date(selectedArticle?.updated_at || Date.now()).toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex gap-2 mt-4 flex-wrap">
+                                        {selectedArticle?.pod_id ? (
+                                            <span className="text-xs bg-indigo-900/30 border border-indigo-700/30 px-2.5 py-1 rounded-full text-indigo-300 shadow-sm font-medium">
+                                                📦 {pods.find(p => p.id === selectedArticle.pod_id)?.name || '限定Pod'}
+                                            </span>
+                                        ) : (
+                                            <span className="text-xs bg-gray-800/50 border border-gray-700 px-2.5 py-1 rounded-full text-gray-400 shadow-sm font-medium">
+                                                🌐 共通（パブリック）
+                                            </span>
+                                        )}
+                                        {Array.isArray(selectedArticle?.tags) && selectedArticle.tags.map(tag => (
+                                            <span key={tag} className="text-xs bg-[#2a2d2e] border border-[#3c3c3c] px-2.5 py-1 rounded-full text-blue-300 shadow-sm cursor-pointer hover:bg-[#333]" onClick={() => setSelectedTag(tag)}>
+                                                #{tag}
+                                            </span>
+                                        ))}
                                     </div>
 
-                                    {/* GenUI Interactive Toolbar if article has HTML/Widget */}
-                                    {genUiHtml && (
-                                        <div className="flex flex-wrap items-center justify-between gap-2 p-2 px-3 bg-[#252526] border border-[#3c3c3c] rounded-lg my-3 shadow-sm">
-                                            <div className="flex items-center gap-1.5">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setActiveTab('preview')}
-                                                    className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                                                        isPreviewMode
-                                                            ? 'bg-indigo-600 text-white shadow'
-                                                            : 'bg-[#1e1e1e] text-gray-300 hover:bg-[#333]'
-                                                    }`}
-                                                >
-                                                    <span>🖥️</span>
-                                                    <span>インタラクティブ (GenUI)</span>
-                                                    <span className="text-[10px] bg-indigo-900 text-indigo-200 px-1.5 py-0.2 rounded font-mono">LIVE</span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setActiveTab('markdown')}
-                                                    className={`px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                                                        !isPreviewMode
-                                                            ? 'bg-[#37373d] text-white shadow'
-                                                            : 'bg-[#1e1e1e] text-gray-300 hover:bg-[#333]'
-                                                    }`}
-                                                >
-                                                    <span>📝</span>
-                                                    <span>ソース / Markdown</span>
-                                                </button>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => openInLiveConcierge(selectedArticle)}
-                                                    className="px-2.5 py-1 bg-indigo-950/90 hover:bg-indigo-900 text-indigo-300 rounded text-xs transition-colors flex items-center gap-1.5 border border-indigo-700/60 font-medium cursor-pointer shadow-xs"
-                                                    title="Live Concierge を起動し、音声でこのダッシュボードの解説を聞く"
-                                                >
-                                                    <span>🎙️</span>
-                                                    <span>Live解説</span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        const blob = new Blob([genUiHtml], { type: 'text/html' });
-                                                        const url = URL.createObjectURL(blob);
-                                                        window.open(url, '_blank');
-                                                    }}
-                                                    className="px-2.5 py-1 bg-[#1e1e1e] hover:bg-[#333] text-gray-300 rounded text-xs transition-colors flex items-center gap-1 border border-[#3c3c3c]"
-                                                    title="別タブで独立した画面として全画面表示"
-                                                >
-                                                    <span>↗️</span>
-                                                    <span>別タブで開く</span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setIsFullWidth(!isFullWidth)}
-                                                    className="px-2.5 py-1 bg-[#1e1e1e] hover:bg-[#333] text-gray-300 rounded text-xs transition-colors flex items-center gap-1 border border-[#3c3c3c]"
-                                                    title={isFullWidth ? "標準幅に戻す" : "横幅を最大化"}
-                                                >
-                                                    <span>{isFullWidth ? '🗗' : '🗖'}</span>
-                                                    <span>{isFullWidth ? '標準幅' : '全幅表示'}</span>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                    
-                                    <hr className="border-[#333] my-3" />
-                                    
-                                    {/* Main Content Area: GenUI Iframe Sandbox or Markdown */}
-                                    {genUiHtml && isPreviewMode ? (
-                                        <div className="w-full flex-1 flex flex-col min-h-[720px] rounded-xl overflow-hidden border border-[#3c3c3c] bg-white shadow-2xl my-2">
-                                            <div className="bg-[#252526] px-3.5 py-2 border-b border-[#3c3c3c] flex items-center justify-between text-xs text-gray-300">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                                    <span className="font-mono font-medium text-gray-200">AI Analytics Interactive Sandbox</span>
-                                                    <span className="text-[10px] bg-emerald-950/60 text-emerald-400 border border-emerald-800/40 px-1.5 py-0.2 rounded font-medium">
-                                                        Zero-Token Execution
-                                                    </span>
+                                    {/* 経営会議・事前ブリーフィング連携アクション (Shared Capability Bus) */}
+                                    {onOpen && selectedArticle && (
+                                        <div className="mt-4 p-3.5 rounded-xl bg-gradient-to-r from-indigo-950/60 via-blue-950/40 to-slate-900/60 border border-indigo-500/30 flex flex-wrap items-center justify-between gap-3">
+                                            <div>
+                                                <div className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                                                    <span>📊 経営会議・事前ブリーフィング引き継ぎ (Shared Capability Bus)</span>
                                                 </div>
-                                                <span className="text-[11px] text-gray-400 font-mono hidden sm:inline">
-                                                    Safe Iframe Sandbox
-                                                </span>
+                                                <p className="text-[11px] text-gray-400 mt-0.5">
+                                                    全社まとめレポートの文脈を保持したまま、単一ビジネスドメインの深掘り分析やAIとの壁打ちを開始できます。
+                                                </p>
                                             </div>
-                                            <iframe
-                                                title={selectedArticle?.title || 'Interactive Preview'}
-                                                srcDoc={genUiHtml}
-                                                className="w-full flex-1 min-h-[680px] border-0"
-                                                sandbox="allow-scripts allow-same-origin allow-popups allow-modals allow-forms allow-downloads"
-                                            />
-                                        </div>
-                                    ) : (
-                                        <div className="prose prose-invert max-w-none text-gray-300 leading-relaxed font-sans mt-2">
-                                            {renderMarkdownLinks(selectedArticle?.content)}
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => onOpen('gemini', 'gemini', 'Gemini AI', { initialBriefingReport: selectedArticle })}
+                                                    className="px-3 py-1.5 rounded-lg bg-blue-600/90 hover:bg-blue-500 text-white text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5"
+                                                >
+                                                    <span>💬</span>
+                                                    <span>チャットで深掘り・AI壁打ち</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => onOpen('mcp-chat', 'mcp-chat', 'MCP Chat Client', { initialBriefingReport: selectedArticle })}
+                                                    className="px-3 py-1.5 rounded-lg bg-indigo-600/90 hover:bg-indigo-500 text-white text-xs font-semibold shadow-sm transition-colors flex items-center gap-1.5"
+                                                >
+                                                    <span>🔌</span>
+                                                    <span>MCPで単一ドメイン深掘り分析</span>
+                                                </button>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
-                            );
-                        })()}
+                                <div className="flex gap-2 ml-4">
+                                    <button onClick={() => setIsEditing(true)} className="px-3 py-1.5 text-sm bg-[#37373d] hover:bg-[#4d4d54] text-white rounded shadow transition-colors">
+                                        編集
+                                    </button>
+                                    <button onClick={handleDelete} className="px-3 py-1.5 text-sm bg-red-900/50 hover:bg-red-800 text-red-100 rounded border border-red-800/50 transition-colors">
+                                        削除
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <hr className="border-[#333] my-6" />
+                            
+                            <div className="prose prose-invert max-w-none text-gray-300 leading-relaxed font-sans mt-2">
+                                {renderMarkdownLinks(selectedArticle?.content)}
+                            </div>
+                        </div>
                         </ErrorBoundary>
                     )
                 ) : (

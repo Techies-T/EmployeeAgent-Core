@@ -3,31 +3,61 @@ const { SSEClientTransport } = require("@modelcontextprotocol/sdk/client/sse.js"
 const db = require('./db.cjs');
 const { decrypt } = require('./crypto.cjs');
 const auditDb = require('./auditDb.cjs');
+const mcpHarnessService = require('./services/mcpHarnessService.cjs');
+const {
+    hydrateAllPolicies,
+    evaluateRolesMcpGrant,
+    inspectMcpToolCallAgainstGrant,
+    isWriteToolName
+} = require('./services/ztaPdpService.cjs');
 
 // State maps
 const serverConnections = new Map(); // serverId -> Connection Object
-// toolServerMap is removed as we dynamically lookup tool routing to support ZTA scoping
+
+async function loadHydratedPolicies() {
+    try {
+        const raw = JSON.parse((await db.getSetting('RBAC_POLICIES')) || '{}');
+        const knownIds = Array.from(serverConnections.keys()).map(String);
+        return hydrateAllPolicies(raw, knownIds);
+    } catch (e) {
+        return hydrateAllPolicies({}, []);
+    }
+}
+
+function extractUserRoles(user) {
+    if (!user || !user.role) return ['user'];
+    return String(user.role).split(',').map(r => r.trim()).filter(Boolean);
+}
 
 /**
  * Loads all MCP servers from the database and initializes them if not already connected.
  */
 async function refreshConnections() {
+    await mcpHarnessService.initMcpHarness();
     return new Promise((resolve, reject) => {
         db.all("SELECT * FROM mcp_servers", [], async (err, rows) => {
             if (err) return reject(err);
             
             for (const row of rows) {
-                if (!serverConnections.has(row.id)) {
-                    let clientSecret = row.client_secret;
-                    if (clientSecret) {
-                        try {
-                            clientSecret = decrypt(clientSecret);
-                        } catch(e) {
-                            console.error(`[MCP] Failed to decrypt secret for server ${row.name}`);
-                            clientSecret = null;
-                        }
+                let clientSecret = row.client_secret;
+                if (clientSecret) {
+                    try {
+                        clientSecret = decrypt(clientSecret);
+                    } catch(e) {
+                        console.error(`[MCP] Failed to decrypt secret for server ${row.name}`);
+                        clientSecret = null;
                     }
+                }
 
+                const inferredMode = row.connection_mode || (
+                    (row.endpoint_url || '').includes('localhost:8080/api/mcp/')
+                        ? 'builtin_local'
+                        : (row.token_url && row.client_id)
+                            ? 'zta_gateway'
+                            : 'direct_public'
+                );
+
+                if (!serverConnections.has(row.id)) {
                     const connState = {
                         id: row.id,
                         name: row.name,
@@ -35,12 +65,23 @@ async function refreshConnections() {
                         token_url: row.token_url,
                         client_id: row.client_id,
                         client_secret: clientSecret,
+                        connection_mode: inferredMode,
+                        domain_key: row.domain_key || '',
                         mcpClientInstance: null,
                         mcpTransport: null,
                         tokenCache: { accessToken: null, expiresAt: null },
                         tools: []
                     };
                     serverConnections.set(row.id, connState);
+                } else {
+                    const existing = serverConnections.get(row.id);
+                    existing.name = row.name;
+                    existing.endpoint_url = row.endpoint_url;
+                    existing.token_url = row.token_url;
+                    existing.client_id = row.client_id;
+                    existing.client_secret = clientSecret;
+                    existing.connection_mode = inferredMode;
+                    existing.domain_key = row.domain_key || '';
                 }
                 
                 // Ensure connection is established in the background
@@ -59,6 +100,9 @@ async function refreshConnections() {
  * Fetches an OAuth token using Client Credentials for a specific server
  */
 async function getOAuthToken(connState, user = null, req = null, isRefresh = false) {
+    if (connState.connection_mode === 'direct_public' || connState.connection_mode === 'builtin_local') {
+        return null;
+    }
     if (!connState.token_url) {
         return null;
     }
@@ -77,7 +121,7 @@ async function getOAuthToken(connState, user = null, req = null, isRefresh = fal
                 'grant_type': 'client_credentials',
                 'client_id': connState.client_id,
                 'client_secret': connState.client_secret,
-                'audience': connState.endpoint_url || '' // ◀ ここに audience を追加！
+                'audience': connState.endpoint_url || ''
             })
         });
 
@@ -105,6 +149,7 @@ async function getOAuthToken(connState, user = null, req = null, isRefresh = fal
             details: {
                 serverId: connState.id || null,
                 serverName: connState.name,
+                connectionMode: connState.connection_mode || 'zta_gateway',
                 tokenUrl: connState.token_url,
                 clientId: connState.client_id,
                 isRefresh: isRefresh,
@@ -128,6 +173,7 @@ async function getOAuthToken(connState, user = null, req = null, isRefresh = fal
             details: {
                 serverId: connState.id || null,
                 serverName: connState.name,
+                connectionMode: connState.connection_mode || 'zta_gateway',
                 tokenUrl: connState.token_url,
                 clientId: connState.client_id,
                 isRefresh: isRefresh,
@@ -144,6 +190,9 @@ async function getOAuthToken(connState, user = null, req = null, isRefresh = fal
  * Returns a valid access token for a server
  */
 async function getValidToken(connState, user = null, req = null) {
+    if (connState.connection_mode === 'direct_public' || connState.connection_mode === 'builtin_local') {
+        return null;
+    }
     const isRefresh = !!connState.tokenCache.accessToken;
     if (connState.tokenCache.accessToken && connState.tokenCache.expiresAt && Date.now() < connState.tokenCache.expiresAt) {
         return connState.tokenCache.accessToken;
@@ -162,7 +211,8 @@ async function ensureConnection(connState, user = null, req = null) {
     const token = await getValidToken(connState, user, req);
 
     if (!connState.mcpClientInstance || !connState.mcpTransport) {
-        console.log(`[MCP ${connState.name}] Connecting to MCP Server at ${connState.endpoint_url}...`);
+        const modeLabel = connState.connection_mode || 'zta_gateway';
+        console.log(`[MCP ${connState.name}] Connecting to MCP Server at ${connState.endpoint_url} (mode: ${modeLabel})...`);
         
         const sseUrl = new URL(connState.endpoint_url);
         let requestInit = {};
@@ -202,7 +252,6 @@ async function ensureConnection(connState, user = null, req = null) {
             console.error(`[MCP ${connState.name}] Failed to list tools:`, e.message);
         }
     } else if (!connState.tools || connState.tools.length === 0) {
-        // If client exists but tools list is empty (e.g. upstream was down during init), retry fetching tools
         try {
             const toolsList = await connState.mcpClientInstance.listTools();
             if (toolsList && toolsList.tools && toolsList.tools.length > 0) {
@@ -216,7 +265,6 @@ async function ensureConnection(connState, user = null, req = null) {
                 connState.mcpTransport = null;
             }
             connState.mcpClientInstance = null;
-            // Retry fresh connection once
             try {
                 return await ensureConnection(connState, user, req);
             } catch (retryErr) {
@@ -229,41 +277,27 @@ async function ensureConnection(connState, user = null, req = null) {
 }
 
 /**
- * Classifies an MCP server into a logical domain and category for routing and UI display.
+ * Classifies an MCP server into a logical domain and category using the dynamic MCP Harness YAML (`mcpHarnessService`).
  */
 function classifyServerDomain(conn) {
-    const nameLower = (conn?.name || '').toLowerCase();
-    const urlLower = (conn?.endpoint_url || '').toLowerCase();
-
-    if (nameLower.includes('knowledge') || urlLower.includes('/api/mcp/knowledge')) {
-        return { domain: 'knowledge_base', icon: '📚', category: 'ナレッジベース', isBuiltInKnowledge: true };
-    }
-    if (nameLower.includes('gemma') || urlLower.includes('/api/mcp/gemma')) {
-        return { domain: 'local_ai', icon: '🤖', category: 'ローカルAI推論', isBuiltInGemma: true };
-    }
-    if (nameLower.includes('npb') || nameLower.includes('baseball') || nameLower.includes('mariadb') || urlLower.includes('/mcp/mariadb')) {
-        return { domain: 'npb_baseball', icon: '⚾', category: 'プロ野球データ分析' };
-    }
-    if (nameLower.includes('行政') || nameLower.includes('procedures') || urlLower.includes('/mcp/admin-procedures')) {
-        return { domain: 'digital_agency', icon: '🏛️', category: '行政手続・統計' };
-    }
-    if (nameLower.includes('catalog') || urlLower.includes('/mcp/catalog')) {
-        return { domain: 'catalog', icon: '📑', category: 'データカタログ・GenUIメタ情報' };
-    }
-    if (nameLower.includes('workspace') || nameLower.includes('calendar') || nameLower.includes('todo') || nameLower.includes('tasks') || nameLower.includes('gmail') || nameLower.includes('google')) {
-        return { domain: 'google_workspace', icon: '📅', category: 'Google Workspace (予定・Todo)' };
-    }
-    return { domain: 'general', icon: '⚡', category: 'システム・汎用' };
+    return mcpHarnessService.classifyServerByHarness(conn);
 }
 
 /**
  * ZTA-compliant PDP check for MCP server access
  * Evaluates whether a user or requested context has permission to access a specific MCP server.
  */
-function hasServerAccess(serverId, allowedWidgets = ['*'], user = null) {
+function hasServerAccess(serverId, allowedWidgets = ['*'], user = null, hydratedPolicies = null) {
     const isAdmin = user?.role === 'admin' || (typeof user?.role === 'string' && user.role.split(',').map(r => r.trim()).includes('admin'));
     if (isAdmin) {
         return true;
+    }
+
+    // If hydratedPolicies is available and user has roles, check Universal Grant first
+    if (hydratedPolicies && user?.role) {
+        const roles = extractUserRoles(user);
+        const grant = evaluateRolesMcpGrant(hydratedPolicies, roles, serverId);
+        if (grant.allowed) return true;
     }
 
     if (!allowedWidgets || allowedWidgets.length === 0) {
@@ -280,14 +314,12 @@ function hasServerAccess(serverId, allowedWidgets = ['*'], user = null) {
     const conn = serverConnections.get(serverId);
     const domainInfo = conn ? classifyServerDomain(conn) : null;
 
-    // Built-in Knowledge Base MCP: app:knowledge-base 権限または mcp:knowledge があれば、他の mcp:X 指定有無に関わらず利用可能とする
     if (domainInfo?.isBuiltInKnowledge) {
         if (allowedWidgets.includes('app:knowledge-base') || allowedWidgets.includes('mcp:knowledge') || allowedWidgets.includes(`mcp:${serverId}`)) {
             return true;
         }
     }
 
-    // 明示的な mcp: プレフィックスによるきめ細かな認可が指定されている場合
     const explicitMcpPerms = allowedWidgets.filter(w => typeof w === 'string' && w.startsWith('mcp:'));
     if (explicitMcpPerms.length > 0) {
         return explicitMcpPerms.includes(`mcp:${serverId}`) || 
@@ -295,7 +327,6 @@ function hasServerAccess(serverId, allowedWidgets = ['*'], user = null) {
                explicitMcpPerms.some(p => p.toLowerCase() === `mcp:${String(serverId).toLowerCase()}`);
     }
 
-    // 明示的な個別 mcp: 指定がない場合、app:mcp-chat 利用権限、または action:use_mcp_tools 権限があればアクセス可能
     const hasChatWidget = allowedWidgets.includes('app:mcp-chat');
     const hasAction = user?.allowed_actions?.includes('action:use_mcp_tools') || user?.allowed_actions?.includes('*');
 
@@ -303,34 +334,51 @@ function hasServerAccess(serverId, allowedWidgets = ['*'], user = null) {
 }
 
 /**
- * Calls a tool, routing it to the correct MCP server
- * @param {string} name - The tool name
- * @param {object} args - The arguments for the tool
- * @param {string[]} allowedWidgets - The user's allowed widgets array to enforce granular permissions
- * @param {object} user - The authenticated user object
- * @param {object} req - Express request object for client IP/UA extraction
+ * Calls a tool, routing it to the correct MCP server and enforcing ZTA Universal Permission Grants (operation_level, data_scope, restricted_identifiers)
  */
 async function callMcpTool(name, args, allowedWidgets = ['*'], user = null, req = null, prompt = null) {
     if (serverConnections.size === 0) {
         await refreshConnections();
     }
 
-    // Dynamically find a server that provides this tool AND the user has access to
+    const hydratedPolicies = await loadHydratedPolicies();
+    const userRoles = extractUserRoles(user);
+
     let targetConnState = null;
+    let activeGrant = null;
+    let lastDenyReason = null;
 
     for (const [id, conn] of serverConnections.entries()) {
-        if (!hasServerAccess(id, allowedWidgets, user)) continue;
+        if (!hasServerAccess(id, allowedWidgets, user, hydratedPolicies)) continue;
         
         if (conn.tools && conn.tools.some(t => t.name === name)) {
+            const grant = evaluateRolesMcpGrant(hydratedPolicies, userRoles, id);
+            // Fall back to permissive grant if legacy allowedWidgets allowed access without explicit mcp_scopes
+            const effectiveGrant = grant.allowed ? grant : {
+                allowed: true,
+                operation_level: 'execute',
+                data_scope: 'all_company',
+                restricted_identifiers: [],
+                blocked_tools: [],
+                scope_prompt_guard: ''
+            };
+
+            const check = inspectMcpToolCallAgainstGrant(effectiveGrant, name, args);
+            if (!check.allowed) {
+                lastDenyReason = check.reason;
+                continue;
+            }
+
             targetConnState = conn;
-            break; // Found an accessible server providing this tool
+            activeGrant = effectiveGrant;
+            break;
         }
     }
 
     if (!targetConnState) {
-        // ダブルチェック: 禁止ツールや未認可ツールへのアクセス試行を検知し、セキュリティ監査ログに記録
         const userIdentifier = user?.email || (user ? `ID:${user.id}` : 'anonymous');
-        console.warn(`[SECURITY AUDIT] 🚨 DOUBLE-CHECK BLOCKED: Unauthorized or disabled tool '${name}' requested by user '${userIdentifier}'`);
+        const denyReason = lastDenyReason || `Tool '${name}' is not permitted or disabled for this user/role (${userRoles.join(', ')}).`;
+        console.warn(`[SECURITY AUDIT] 🚨 ZTA PEP BLOCKED: Tool '${name}' requested by '${userIdentifier}' -> ${denyReason}`);
 
         await auditDb.logEvent({
             userId: user ? user.id : null,
@@ -341,21 +389,22 @@ async function callMcpTool(name, args, allowedWidgets = ['*'], user = null, req 
             req: req,
             details: {
                 toolName: name,
+                userRoles,
                 arguments: args,
                 sqlQuery: args?.query || args?.sql || null,
                 aiPrompt: prompt,
-                reason: `Tool '${name}' is not permitted or disabled for this user/role.`,
+                reason: denyReason,
                 doubleCheckEnforced: true
             }
         });
-        throw new Error(`Access denied: Tool '${name}' is disabled or not permitted.`);
+        throw new Error(`Access denied (ZTA PEP): ${denyReason}`);
     }
 
     const sqlQuery = args?.query || args?.sql || null;
     if (sqlQuery) {
-        console.log(`[MCP DB Query] 🔍 実行クエリ [Server: ${targetConnState.name} | Tool: ${name}]:\n${sqlQuery}`);
+        console.log(`[MCP DB Query] 🔍 実行クエリ [Server: ${targetConnState.name} | Mode: ${targetConnState.connection_mode} | OpLevel: ${activeGrant?.operation_level} | Tool: ${name}]:\n${sqlQuery}`);
     } else {
-        console.log(`[MCP Tool Call] ⚙️ ツール実行 [Server: ${targetConnState.name} | Tool: ${name}] Args:`, args);
+        console.log(`[MCP Tool Call] ⚙️ ツール実行 [Server: ${targetConnState.name} | Mode: ${targetConnState.connection_mode} | Tool: ${name}] Args:`, args);
     }
 
     let isRetry = false;
@@ -370,7 +419,6 @@ async function callMcpTool(name, args, allowedWidgets = ['*'], user = null, req 
 
             console.log(`[MCP Exec] ✅ Tool '${name}' completed successfully.`);
 
-            // 成功ログを記録
             await auditDb.logEvent({
                 userId: user ? user.id : null,
                 userEmail: user ? user.email : null,
@@ -381,6 +429,9 @@ async function callMcpTool(name, args, allowedWidgets = ['*'], user = null, req 
                 details: {
                     serverId: targetConnState.id,
                     serverName: targetConnState.name,
+                    connectionMode: targetConnState.connection_mode || 'zta_gateway',
+                    operationLevel: activeGrant?.operation_level || 'execute',
+                    dataScope: activeGrant?.data_scope || 'all_company',
                     toolName: name,
                     arguments: args,
                     sqlQuery: sqlQuery,
@@ -397,14 +448,12 @@ async function callMcpTool(name, args, allowedWidgets = ['*'], user = null, req 
                                      errMsg.includes("fetch failed") ||
                                      errMsg.includes("closed");
 
-            // 古いコネクションを確実にクリーンアップ
             if (targetConnState.mcpTransport) {
                 try { await targetConnState.mcpTransport.close(); } catch(e) {}
                 targetConnState.mcpTransport = null;
             }
             targetConnState.mcpClientInstance = null;
 
-            // アイドル切断等の場合は透過的に1度だけサイレントリトライ
             if (!isRetry && isSessionExpired) {
                 console.warn(`[MCP ${targetConnState.name}] Session expired or connection lost (${errMsg}). Auto-reconnecting and retrying tool '${name}'...`);
                 isRetry = true;
@@ -413,7 +462,6 @@ async function callMcpTool(name, args, allowedWidgets = ['*'], user = null, req 
 
             console.error(`[MCP ${targetConnState.name}] Error calling Tool ${name}:`, error);
             
-            // 失敗ログを記録
             await auditDb.logEvent({
                 userId: user ? user.id : null,
                 userEmail: user ? user.email : null,
@@ -424,6 +472,7 @@ async function callMcpTool(name, args, allowedWidgets = ['*'], user = null, req 
                 details: {
                     serverId: targetConnState.id,
                     serverName: targetConnState.name,
+                    connectionMode: targetConnState.connection_mode || 'zta_gateway',
                     toolName: name,
                     arguments: args,
                     aiPrompt: prompt,
@@ -452,24 +501,29 @@ function disconnectServer(serverId) {
 }
 
 /**
- * Gets all tools from all connected MCP servers formatted for Gemini functionDeclarations
- * @param {string[]} allowedWidgets - The user's allowed widgets array to filter the tools
- * @param {object} user - The authenticated user object
+ * Gets all tools from all connected MCP servers formatted for Gemini functionDeclarations,
+ * dynamically filtering out write/destructive tools when the user's grant for a server is `read_only`.
  */
 async function getAllMcpToolsForGemini(allowedWidgets = ['*'], user = null) {
     if (serverConnections.size === 0) {
         await refreshConnections();
     }
     
+    const hydratedPolicies = await loadHydratedPolicies();
+    const userRoles = extractUserRoles(user);
+
     const functionDeclarations = [];
     const addedToolNames = new Set();
     
     for (const [id, conn] of serverConnections.entries()) {
-        if (!hasServerAccess(id, allowedWidgets, user)) {
-            continue; // Skip tools from this server if user doesn't have permission
+        if (!hasServerAccess(id, allowedWidgets, user, hydratedPolicies)) {
+            continue;
         }
 
-        // Self-healing: If tools list is empty, attempt to fetch/reconnect
+        const grant = evaluateRolesMcpGrant(hydratedPolicies, userRoles, id);
+        const effectiveOpLevel = grant.allowed ? grant.operation_level : 'execute';
+        const blockedTools = grant.allowed ? (grant.blocked_tools || []) : [];
+
         if (!conn.tools || conn.tools.length === 0 || !conn.mcpClientInstance) {
             try {
                 await ensureConnection(conn);
@@ -478,37 +532,50 @@ async function getAllMcpToolsForGemini(allowedWidgets = ['*'], user = null) {
             }
         }
 
-        const { domain, category } = classifyServerDomain(conn);
+        const { domain, category, routingInstruction } = classifyServerDomain(conn);
 
         if (conn.tools) {
             for (const tool of conn.tools) {
-                const safeName = tool.name.replace(/[^a-zA-Z0-9_]/g, '_'); // Gemini only allows a-z, A-Z, 0-9, and _
+                // Enforce ZTA Universal Grant at tool-discovery time: hide write/destructive tools if read_only
+                if (effectiveOpLevel === 'read_only' && isWriteToolName(tool.name)) {
+                    continue;
+                }
+                if (blockedTools.some(bt => bt.toLowerCase() === tool.name.toLowerCase())) {
+                    continue;
+                }
+
+                const safeName = tool.name.replace(/[^a-zA-Z0-9_]/g, '_');
                 
                 if (addedToolNames.has(safeName)) {
-                    continue; // Skip duplicate tool declarations
+                    continue;
                 }
                 addedToolNames.add(safeName);
 
                 const rawDesc = tool.description || `MCP Tool: ${tool.name}`;
-                const enrichedDesc = `[MCP Server: ${conn.name} | カテゴリ: ${category}] ${rawDesc}`;
+                const scopeNote = grant.scope_prompt_guard ? ` [スコープ制約: ${grant.scope_prompt_guard}]` : '';
+                const enrichedDesc = `[MCP Server: ${conn.name} | カテゴリ: ${category} | 権限: ${effectiveOpLevel}] ${rawDesc}${scopeNote}`;
 
                 const funcDecl = {
                     name: safeName,
                     description: enrichedDesc,
                     serverId: conn.id,
                     serverName: conn.name,
+                    connectionMode: conn.connection_mode || 'zta_gateway',
                     domain: domain,
-                    category: category
+                    category: category,
+                    routingInstruction: routingInstruction || '',
+                    operationLevel: effectiveOpLevel,
+                    dataScope: grant.data_scope || 'all_company',
+                    restrictedIdentifiers: grant.restricted_identifiers || [],
+                    scopePromptGuard: grant.scope_prompt_guard || ''
                 };
                 
                 if (tool.inputSchema) {
-                    // MCP uses JSON Schema. Gemini supports a subset of JSON Schema.
                     const properties = {};
                     const required = [];
                     
                     if (tool.inputSchema.properties) {
                         for (const [key, value] of Object.entries(tool.inputSchema.properties)) {
-                            // Map type to one of Gemini's supported types
                             let typeStr = 'string';
                             if (value.type === 'integer' || value.type === 'number') typeStr = 'number';
                             if (value.type === 'boolean') typeStr = 'boolean';
@@ -541,17 +608,15 @@ async function getAllMcpToolsForGemini(allowedWidgets = ['*'], user = null) {
 
 /**
  * Tests an MCP connection without saving to the database
- * @param {object} config - The temporary server configuration
- * @param {object} user - The authenticated user object
- * @param {object} req - Express request object
- * @returns {object} Result with success boolean and tool count or error message
  */
 async function testMcpConnection(config, user = null, req = null) {
-    const { endpoint_url, token_url, client_id, client_secret } = config;
+    const { endpoint_url, token_url, client_id, client_secret, connection_mode } = config;
     
     if (!endpoint_url) {
         return { success: false, error: "Endpoint URL is required." };
     }
+
+    const mode = connection_mode || ((token_url && client_id) ? 'zta_gateway' : 'direct_public');
 
     const tempState = {
         name: 'TestConnection',
@@ -559,6 +624,7 @@ async function testMcpConnection(config, user = null, req = null) {
         token_url,
         client_id,
         client_secret,
+        connection_mode: mode,
         tokenCache: { accessToken: null, expiresAt: null }
     };
 
@@ -566,13 +632,11 @@ async function testMcpConnection(config, user = null, req = null) {
     let mcpClientInstance = null;
 
     try {
-        // 1. Attempt to get Token if configured
         let token = null;
-        if (token_url && client_id && client_secret) {
+        if (mode === 'zta_gateway' && token_url && client_id && client_secret) {
             token = await getOAuthToken(tempState, user, req, false);
         }
 
-        // 2. Attempt SSE connection
         const sseUrl = new URL(endpoint_url);
         let requestInit = {};
 
@@ -590,39 +654,35 @@ async function testMcpConnection(config, user = null, req = null) {
 
         await mcpClientInstance.connect(mcpTransport);
         
-        // 3. Fetch tools to verify functionality
         const toolsList = await mcpClientInstance.listTools();
         const toolNames = toolsList?.tools?.map(t => t.name) || [];
         const toolCount = toolNames.length;
 
-        // 成功ログを記録
         await auditDb.logEvent({
             userId: user ? user.id : null,
             userEmail: user ? user.email : null,
             eventType: 'mcp_connection_test',
-            action: `Test MCP Connection: ${endpoint_url}`,
+            action: `Test MCP Connection (${mode}): ${endpoint_url}`,
             status: 'success',
             req: req,
-            details: { endpointUrl: endpoint_url, tokenUrl: token_url, toolCount, tools: toolNames }
+            details: { endpointUrl: endpoint_url, connectionMode: mode, tokenUrl: token_url, toolCount, tools: toolNames }
         });
 
-        return { success: true, toolCount, tools: toolNames };
+        return { success: true, connectionMode: mode, toolCount, tools: toolNames };
 
     } catch (error) {
-        // 失敗ログを記録
         await auditDb.logEvent({
             userId: user ? user.id : null,
             userEmail: user ? user.email : null,
             eventType: 'mcp_connection_test',
-            action: `Test MCP Connection: ${endpoint_url}`,
+            action: `Test MCP Connection (${mode}): ${endpoint_url}`,
             status: 'failure',
             req: req,
-            details: { endpointUrl: endpoint_url, tokenUrl: token_url, error: error.message || String(error) }
+            details: { endpointUrl: endpoint_url, connectionMode: mode, tokenUrl: token_url, error: error.message || String(error) }
         });
 
         return { success: false, error: error.message || String(error) };
     } finally {
-        // Cleanup connection
         if (mcpTransport) {
             try { await mcpTransport.close(); } catch(e) {}
         }
@@ -631,21 +691,24 @@ async function testMcpConnection(config, user = null, req = null) {
 
 /**
  * Returns lightweight metadata of all accessible MCP servers and tools for the client.
- * Used by the client to construct dynamic execution pipelines.
- * @param {string[]} allowedWidgets - The user's allowed widgets array
- * @param {object} user - The authenticated user object
  */
 async function getMcpMetadata(allowedWidgets = ['*'], user = null) {
     if (serverConnections.size === 0) {
         await refreshConnections();
     }
 
+    const hydratedPolicies = await loadHydratedPolicies();
+    const userRoles = extractUserRoles(user);
     const serversMeta = [];
 
     for (const [id, conn] of serverConnections.entries()) {
-        if (!hasServerAccess(id, allowedWidgets, user)) {
+        if (!hasServerAccess(id, allowedWidgets, user, hydratedPolicies)) {
             continue;
         }
+
+        const grant = evaluateRolesMcpGrant(hydratedPolicies, userRoles, id);
+        const effectiveOpLevel = grant.allowed ? grant.operation_level : 'execute';
+        const blockedTools = grant.allowed ? (grant.blocked_tools || []) : [];
 
         if (!conn.tools || conn.tools.length === 0 || !conn.mcpClientInstance) {
             try {
@@ -657,18 +720,27 @@ async function getMcpMetadata(allowedWidgets = ['*'], user = null) {
 
         const { domain, icon, category } = classifyServerDomain(conn);
 
-        const toolsMeta = (conn.tools || []).map(t => ({
-            name: t.name,
-            description: t.description || '',
-            parameters: t.inputSchema ? Object.keys(t.inputSchema.properties || {}) : []
-        }));
+        const toolsMeta = (conn.tools || [])
+            .filter(t => !(effectiveOpLevel === 'read_only' && isWriteToolName(t.name)))
+            .filter(t => !blockedTools.some(bt => bt.toLowerCase() === t.name.toLowerCase()))
+            .map(t => ({
+                name: t.name,
+                description: t.description || '',
+                parameters: t.inputSchema ? Object.keys(t.inputSchema.properties || {}) : []
+            }));
 
         serversMeta.push({
             id: conn.id,
             name: conn.name,
+            connection_mode: conn.connection_mode || 'zta_gateway',
+            domain_key: conn.domain_key || domain,
             domain,
             icon,
             category,
+            operation_level: effectiveOpLevel,
+            data_scope: grant.data_scope || 'all_company',
+            restricted_identifiers: grant.restricted_identifiers || [],
+            scope_prompt_guard: grant.scope_prompt_guard || '',
             toolCount: toolsMeta.length,
             tools: toolsMeta
         });
@@ -690,5 +762,6 @@ module.exports = {
     disconnectServer,
     getAllMcpToolsForGemini,
     getMcpMetadata,
-    testMcpConnection
+    testMcpConnection,
+    classifyServerDomain
 };

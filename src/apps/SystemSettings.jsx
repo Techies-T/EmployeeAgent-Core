@@ -14,6 +14,9 @@ import WorkPolicyTab from './SystemSettings/tabs/WorkPolicyTab';
 import FinderTab from './SystemSettings/tabs/FinderTab';
 import AntigravityAgentTab from './SystemSettings/tabs/AntigravityAgentTab';
 import LiveConciergeTab from './SystemSettings/tabs/LiveConciergeTab';
+import AiHubTab from './SystemSettings/tabs/AiHubTab';
+import WidgetStoreTab from './SystemSettings/tabs/WidgetStoreTab';
+import ZtaPolicyMatrixTab from './SystemSettings/tabs/ZtaPolicyMatrixTab';
 import pkg from '../../package.json';
 
 const SystemSettings = ({ user }) => {
@@ -91,8 +94,11 @@ const SystemSettings = ({ user }) => {
     const [geminiLiveAvailableModels, setGeminiLiveAvailableModels] = useState([]);
     const [geminiLiveDefaultModel, setGeminiLiveDefaultModel] = useState('gemini-3.8-live');
 
-    // RBAC Policies
+    // RBAC Policies & Installed Plugins State
     const [rbacPolicies, setRbacPolicies] = useState({});
+    const [installedWidgets, setInstalledWidgets] = useState([]);
+    const [coreAdminSubTab, setCoreAdminSubTab] = useState('oauth');
+    const [orgSubTab, setOrgSubTab] = useState('users');
     
     // User Invitation State
     const [usersList, setUsersList] = useState([]);
@@ -295,6 +301,9 @@ const SystemSettings = ({ user }) => {
                 }
                 if (data.sessionLockMaxCount !== undefined) {
                     setSessionLockMaxCount(Number(data.sessionLockMaxCount) || 6);
+                }
+                if (Array.isArray(data.installedWidgets)) {
+                    setInstalledWidgets(data.installedWidgets);
                 }
             })
             .catch(err => console.error("Failed to fetch config", err));
@@ -778,197 +787,57 @@ const SystemSettings = ({ user }) => {
         }
     };
 
-    const sidebarItems = [
-        { 
-            id: 'General', 
-            icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'General' ? 'text-white' : 'text-gray-500'}`}>
-                    <circle cx="12" cy="12" r="3" />
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                </svg>
-            ), 
-            label: 'General' 
+    const isSystemAdmin = canManageSettings || hasAction('action:manage_roles') || hasAction('action:manage_users');
+
+    const personalItems = [
+        {
+            id: 'General',
+            section: 'personal',
+            icon: '👤',
+            label: 'マイ設定・プロフィール'
         },
-        { 
-            id: 'Skills', 
-            icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Skills' ? 'text-white' : 'text-teal-600'}`}>
-                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-                </svg>
-            ), 
-            label: 'Skills' 
-        },
-        ...(hasAction('action:manage_system_settings') ? [
-            { 
-                id: 'System', 
-                icon: (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'System' ? 'text-white' : 'text-blue-600'}`}>
-                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                    </svg>
-                ), 
-                label: 'System' 
-            },
-            { 
-                id: 'Live Concierge', 
-                icon: (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Live Concierge' ? 'text-white' : 'text-indigo-600'}`}>
-                        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                        <line x1="12" y1="19" x2="12" y2="22" />
-                    </svg>
-                ), 
-                label: 'Live Concierge' 
-            },
-            { 
-                id: 'Security Logs', 
-                icon: (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Security Logs' ? 'text-white' : 'text-red-500'}`}>
-                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                    </svg>
-                ), 
-                label: 'Security Logs' 
-            }
-        ] : []),
-        ...(hasAction('action:manage_work_policy') ? [
-            { 
-                id: 'Work Policy', 
-                icon: (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Work Policy' ? 'text-white' : 'text-emerald-600'}`}>
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                        <polyline points="14 2 14 8 20 8" />
-                        <line x1="16" y1="13" x2="8" y2="13" />
-                        <line x1="16" y1="17" x2="8" y2="17" />
-                        <polyline points="10 9 9 9 8 9" />
-                    </svg>
-                ), 
-                label: 'Work Policy' 
-            }
-        ] : []),
-        ...(hasWidget('workflow:deepresearch_html') || hasWidget('workflow:deepresearch_infographic') || hasWidget('workflow:deepresearch_full') || hasAction('action:edit_workflow_model') || hasAction('action:manage_system_settings') ? [
-            {
-                id: 'Deep Research', 
-                icon: (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Deep Research' ? 'text-white' : 'text-indigo-500'}`}>
-                        <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
-                        <rect x="9" y="9" width="6" height="6" />
-                        <line x1="9" y1="1" x2="9" y2="4" />
-                        <line x1="15" y1="1" x2="15" y2="4" />
-                        <line x1="9" y1="20" x2="9" y2="23" />
-                        <line x1="15" y1="20" x2="15" y2="23" />
-                        <line x1="20" y1="9" x2="23" y2="9" />
-                        <line x1="20" y1="14" x2="23" y2="14" />
-                        <line x1="1" y1="9" x2="4" y2="9" />
-                        <line x1="1" y1="14" x2="4" y2="14" />
-                    </svg>
-                ), 
-                label: 'Deep Research'
-            }
-        ] : []),
-        ...(hasAction('action:manage_system_settings') ? [
-            {
-                id: 'Server Monitor', 
-                icon: (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Server Monitor' ? 'text-white' : 'text-emerald-500'}`}>
-                        <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242" />
-                        <path d="M12 12v9" />
-                        <path d="m8 17 4 4 4-4" />
-                    </svg>
-                ), 
-                label: 'MCP Connections'
-            }
-        ] : []),
-        { 
-            id: 'Appearance', 
-            icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Appearance' ? 'text-white' : 'text-pink-500'}`}>
-                    <path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" />
-                    <circle cx="7.5" cy="10.5" r="1.5" fill="currentColor" />
-                    <circle cx="11.5" cy="7.5" r="1.5" fill="currentColor" />
-                    <circle cx="16.5" cy="9.5" r="1.5" fill="currentColor" />
-                    <circle cx="15.5" cy="14.5" r="1.5" fill="currentColor" />
-                </svg>
-            ), 
-            label: 'Appearance' 
-        },
-        ...(hasAction('action:manage_rag_folders') ? [
-            {
-                id: 'Personal RAG', 
-                icon: (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Personal RAG' ? 'text-white' : 'text-indigo-500'}`}>
-                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-                    </svg>
-                ), 
-                label: 'Personal RAG'
-            }
-        ] : []),
-        { 
-            id: 'Finder', 
-            icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Finder' ? 'text-white' : 'text-blue-500'}`}>
-                    <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" />
-                </svg>
-            ), 
-            label: 'Finder' 
-        },
-        { 
-            id: 'Chat Config', 
-            icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Chat Config' ? 'text-white' : 'text-purple-500'}`}>
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                    <path d="M12 7l1 2 2 1-2 1-1 2-1-2-2-1 2-1z" fill="currentColor" />
-                </svg>
-            ), 
-            label: 'Chat Presets & FAQ' 
-        },
-        { 
-            id: 'Pods', 
-            icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Pods' ? 'text-white' : 'text-amber-500'}`}>
-                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                    <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-                    <line x1="12" y1="22.08" x2="12" y2="12" />
-                </svg>
-            ), 
-            label: 'Pods' 
-        },
-        { 
-            id: 'Users', 
-            icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Users' ? 'text-white' : 'text-sky-500'}`}>
-                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                    <circle cx="9" cy="7" r="4" />
-                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                </svg>
-            ), 
-            label: (hasAction('action:manage_users') || hasAction('action:invite_users')) ? 'Users & Groups' : 'Profile' 
-        },
-        ...(hasAction('action:manage_roles') ? [
-            { 
-                id: 'Roles', 
-                icon: (
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Roles' ? 'text-white' : 'text-indigo-600'}`}>
-                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                        <circle cx="12" cy="11" r="2" />
-                        <path d="M12 13v4" />
-                    </svg>
-                ), 
-                label: 'Roles & Permissions' 
-            }
-        ] : []),
-        { 
-            id: 'Antigravity Agent', 
-            icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={`w-4 h-4 ${activeTab === 'Antigravity Agent' ? 'text-white' : 'text-cyan-500'}`}>
-                    <path d="M12 2L2 7l10 5 10-5-10-5z" />
-                    <path d="M2 17l10 5 10-5" />
-                    <path d="M2 12l10 5 10-5" />
-                </svg>
-            ), 
-            label: 'Antigravity Agent' 
+        {
+            id: 'Appearance',
+            section: 'personal',
+            icon: '🎨',
+            label: '表示・外観テーマ'
         }
     ];
+
+    const adminItems = isSystemAdmin ? [
+        {
+            id: 'AI Hub',
+            section: 'admin',
+            icon: '🤖',
+            label: 'AI プロバイダー & モデル割当'
+        },
+        {
+            id: 'Widget Store',
+            section: 'admin',
+            icon: '🧩',
+            label: 'ウィジェット管理 & ストア'
+        },
+        ...(hasAction('action:manage_roles') || canManageSettings ? [{
+            id: 'ZTA PDP',
+            section: 'admin',
+            icon: '🛡️',
+            label: 'ZTA ロール & 権限ビルダー'
+        }] : []),
+        {
+            id: 'Organization',
+            section: 'admin',
+            icon: '👥',
+            label: '組織 (ユーザー & Pod 管理)'
+        },
+        ...(canManageSettings ? [{
+            id: 'Core & Audit',
+            section: 'admin',
+            icon: '⚙️',
+            label: 'コアシステム & ZTA 監査'
+        }] : [])
+    ] : [];
+
+    const sidebarItems = [...personalItems, ...adminItems];
 
     useEffect(() => {
         if (sidebarItems.length > 0 && !sidebarItems.find(item => item.id === activeTab)) {
@@ -985,112 +854,140 @@ const SystemSettings = ({ user }) => {
         return 0;
     });
 
+    const activeItemMeta = sidebarItems.find(item => item.id === activeTab);
+
     return (
         <div className="flex h-full w-full overflow-hidden bg-[#f5f5f7] text-black font-sans text-sm select-none">
             {/* Sidebar */}
-            <div className="w-52 flex-shrink-0 bg-[#e8e8ed]/50 border-r border-gray-300/50 pt-4 pb-4 px-2 flex flex-col gap-1 backdrop-blur-xl overflow-y-auto overscroll-contain min-h-0">
-                <div className="px-3 mb-2 flex-shrink-0">
-                    <div className="flex items-center gap-2 mb-4">
-                        <div className="w-8 h-8 bg-gray-300 rounded-full overflow-hidden flex items-center justify-center font-medium text-gray-700 shadow-inner">
+            <div className="w-60 flex-shrink-0 bg-[#e8e8ed]/70 border-r border-gray-300/60 pt-4 pb-4 px-2.5 flex flex-col gap-1 backdrop-blur-xl overflow-y-auto overscroll-contain min-h-0">
+                <div className="px-2.5 mb-2 flex-shrink-0">
+                    <div className="flex items-center gap-2.5 mb-3">
+                        <div className="w-9 h-9 bg-gray-300 rounded-full overflow-hidden flex items-center justify-center font-bold text-gray-700 shadow-inner">
                             {user?.avatar_url || user?.avatarUrl ? (
                                 <img src={user?.avatar_url || user?.avatarUrl} alt="User" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                             ) : (
                                 <span>{user?.name?.charAt(0) || user?.email?.charAt(0) || '?'}</span>
                             )}
                         </div>
-                        <div className="flex flex-col">
-                            <span className="font-semibold text-xs truncate w-24">{user?.name || 'User'}</span>
-                            <span className="text-[10px] text-gray-500">Apple ID</span>
+                        <div className="flex flex-col min-w-0">
+                            <span className="font-bold text-xs truncate">{user?.name || 'User'}</span>
+                            <span className="text-[10px] text-gray-500 truncate">{user?.role || 'member'} · v{pkg.version}</span>
                         </div>
                     </div>
                 </div>
 
-                {sidebarItems.map((item) => (
+                {/* Personal Section */}
+                <div className="px-2.5 pt-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    👤 マイ設定 (個人用)
+                </div>
+                {personalItems.map((item) => (
                     <button
                         key={item.id}
                         onClick={() => setActiveTab(item.id)}
-                        className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-left transition-colors flex-shrink-0 ${activeTab === item.id
-                            ? 'bg-blue-500 text-white shadow-sm'
-                            : 'hover:bg-black/5 text-gray-700'
-                            }`}
+                        className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors flex-shrink-0 cursor-pointer ${
+                            activeTab === item.id
+                                ? 'bg-blue-600 text-white shadow-xs'
+                                : 'hover:bg-black/5 text-gray-700'
+                        }`}
                     >
-                        <span className="text-lg">{item.icon}</span>
-                        <span className="font-medium text-xs truncate">{item.label}</span>
+                        <span className="text-base leading-none">{item.icon}</span>
+                        <span className="font-semibold text-xs truncate">{item.label}</span>
                     </button>
                 ))}
+
+                {/* System Admin Console Section */}
+                {adminItems.length > 0 && (
+                    <>
+                        <div className="px-2.5 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-indigo-600">
+                            🛠️ システム管理コンソール
+                        </div>
+                        {adminItems.map((item) => (
+                            <button
+                                key={item.id}
+                                onClick={() => setActiveTab(item.id)}
+                                className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors flex-shrink-0 cursor-pointer ${
+                                    activeTab === item.id
+                                        ? 'bg-indigo-600 text-white shadow-xs'
+                                        : 'hover:bg-black/5 text-gray-800'
+                                }`}
+                            >
+                                <span className="text-base leading-none">{item.icon}</span>
+                                <span className="font-semibold text-xs truncate">{item.label}</span>
+                            </button>
+                        ))}
+                    </>
+                )}
             </div>
 
             {/* Content Area */}
-            <div className="flex-1 overflow-y-auto overscroll-contain p-8 min-h-0 bg-[#f5f5f7]">
-                <h1 className="text-2xl font-bold mb-6">{activeTab}</h1>
+            <div className="flex-1 overflow-y-auto overscroll-contain p-7 min-h-0 bg-[#f5f5f7]">
+                <div className="flex items-center justify-between mb-5">
+                    <h1 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                        <span>{activeItemMeta?.icon}</span>
+                        <span>{activeItemMeta?.label || activeTab}</span>
+                    </h1>
+                </div>
 
-                {activeTab === 'Skills' && <SkillsTab />}
-
-
-                {activeTab === 'Users' && (
-                    <UsersTab user={user} rbacPolicies={rbacPolicies} hasAction={hasAction} />
-                )}
-
-                {activeTab === 'Roles' && hasAction('action:manage_roles') && (
-                    <RolesTab user={user} rbacPolicies={rbacPolicies} onSaveRbacPolicies={handleSaveRbacPolicies} ragFolders={ragFolders} />
+                {/* Personal Tabs */}
+                {activeTab === 'General' && (
+                    <div className="space-y-6">
+                        <GeneralTab />
+                        {!isSystemAdmin && (
+                            <UsersTab user={user} rbacPolicies={rbacPolicies} hasAction={hasAction} />
+                        )}
+                    </div>
                 )}
 
                 {activeTab === 'Appearance' && (
                     <div className="space-y-4">
-                        <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4">
-                            <h2 className="font-semibold mb-3">Appearance</h2>
+                        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                            <h2 className="font-bold text-sm mb-3">デスクトップ外観モード</h2>
                             <div className="flex gap-4">
                                 <div className="flex flex-col items-center gap-2 cursor-pointer">
-                                    <div className="w-16 h-10 bg-gray-100 rounded border border-gray-300"></div>
-                                    <span className="text-xs">Light</span>
+                                    <div className="w-20 h-12 bg-gray-100 rounded-lg border border-gray-300"></div>
+                                    <span className="text-xs font-medium">ライト</span>
                                 </div>
                                 <div className="flex flex-col items-center gap-2 cursor-pointer">
-                                    <div className="w-16 h-10 bg-gray-800 rounded border border-gray-600"></div>
-                                    <span className="text-xs">Dark</span>
+                                    <div className="w-20 h-12 bg-gray-800 rounded-lg border border-gray-600"></div>
+                                    <span className="text-xs font-medium">ダーク</span>
                                 </div>
                                 <div className="flex flex-col items-center gap-2 cursor-pointer">
-                                    <div className="w-16 h-10 bg-gradient-to-r from-gray-200 to-gray-800 rounded border border-gray-400 ring-2 ring-blue-500 ring-offset-2"></div>
-                                    <span className="text-xs">Auto</span>
+                                    <div className="w-20 h-12 bg-gradient-to-r from-gray-200 to-gray-800 rounded-lg border border-gray-400 ring-2 ring-blue-500 ring-offset-2"></div>
+                                    <span className="text-xs font-medium">自動 (Auto)</span>
                                 </div>
                             </div>
                         </div>
                     </div>
                 )}
 
-                {activeTab === 'General' && (
-                    <GeneralTab />
-                )}
-
-                
-                {activeTab === 'System' && canManageSettings && (
-                    <SystemTab
+                {/* Category 1: AI Hub (Unified API Keys + Per-Widget Model Routing Matrix) */}
+                {activeTab === 'AI Hub' && isSystemAdmin && (
+                    <AiHubTab
                         geminiApiKey={geminiApiKey}
                         setGeminiApiKey={setGeminiApiKey}
                         claudeApiKey={claudeApiKey}
                         setClaudeApiKey={setClaudeApiKey}
                         aiProvider={aiProvider}
                         handleAiProviderChange={handleAiProviderChange}
-                        googleClientId={googleClientId}
-                        setGoogleClientId={setGoogleClientId}
-                        googleClientSecret={googleClientSecret}
-                        setGoogleClientSecret={setGoogleClientSecret}
-                        isConfigured={isConfigured}
                         isGeminiConfigured={isGeminiConfigured}
                         isClaudeConfigured={isClaudeConfigured}
                         handleSaveSettings={handleSaveSettings}
-                        searchTerm={searchTerm}
-                        setSearchTerm={setSearchTerm}
                         filteredModels={filteredModels}
                         claudeModels={claudeModels}
                         currentModel={currentModel}
                         handleModelChange={handleModelChange}
                         currentClaudeModel={currentClaudeModel}
                         handleClaudeModelChange={handleClaudeModelChange}
-                        refreshModelsList={refreshModelsList}
-                        currentNanoBananaModel={currentNanoBananaModel}
-                        handleNanoBananaModelChange={handleNanoBananaModelChange}
+                        currentMcpChatModel={currentMcpChatModel}
+                        handleMcpChatModelChange={handleMcpChatModelChange}
+                        currentResearchModel={currentResearchModel}
+                        handleResearchModelChange={handleResearchModelChange}
                         currentHtmlSvgModel={currentHtmlSvgModel}
                         handleHtmlSvgModelChange={handleHtmlSvgModelChange}
+                        currentNanoBananaModel={currentNanoBananaModel}
+                        handleNanoBananaModelChange={handleNanoBananaModelChange}
+                        geminiLiveDefaultModel={geminiLiveDefaultModel}
+                        refreshModelsList={refreshModelsList}
                         localAiEnabled={localAiEnabled}
                         setLocalAiEnabled={setLocalAiEnabled}
                         localAiHost={localAiHost}
@@ -1099,28 +996,39 @@ const SystemSettings = ({ user }) => {
                         setLocalAiModel={setLocalAiModel}
                         localAiTemperature={localAiTemperature}
                         setLocalAiTemperature={setLocalAiTemperature}
-                        sessionLockMaxCount={sessionLockMaxCount}
-                        setSessionLockMaxCount={setSessionLockMaxCount}
+                        installedWidgets={installedWidgets}
                     />
                 )}
 
-                {activeTab === 'Live Concierge' && canManageSettings && (
-                    <LiveConciergeTab
-                        initialConfig={{
-                            geminiLiveAvailableModels,
-                            geminiLiveDefaultModel,
-                            isGeminiConfigured
-                        }}
+                {/* Category 2: Widget Store & Encapsulated Widget Configs */}
+                {activeTab === 'Widget Store' && isSystemAdmin && (
+                    <WidgetStoreTab
+                        user={user}
                         canManageSettings={canManageSettings}
-                        onSaved={({ geminiLiveAvailableModels: newModels, geminiLiveDefaultModel: newDefault }) => {
-                            setGeminiLiveAvailableModels(newModels);
-                            setGeminiLiveDefaultModel(newDefault);
-                        }}
-                    />
-                )}
-
-                {activeTab === 'Personal RAG' && hasAction('action:manage_rag_folders') && (
-                    <PersonalRagTab
+                        hasWidget={hasWidget}
+                        hasAction={hasAction}
+                        mcpQuickPrompts={mcpQuickPrompts}
+                        setMcpQuickPrompts={setMcpQuickPrompts}
+                        handleSaveSettings={handleSaveSettings}
+                        models={models}
+                        claudeModels={claudeModels}
+                        currentMcpChatModel={currentMcpChatModel}
+                        handleMcpChatModelChange={handleMcpChatModelChange}
+                        mcpChatSystemInstruction={mcpChatSystemInstruction}
+                        setMcpChatSystemInstruction={setMcpChatSystemInstruction}
+                        mcpChatMaxTurns={mcpChatMaxTurns}
+                        setMcpChatMaxTurns={setMcpChatMaxTurns}
+                        defaultMcpChatSystemInstruction={defaultMcpChatSystemInstruction}
+                        chatPresets={chatPresets}
+                        setChatPresets={setChatPresets}
+                        chatPresetContext={chatPresetContext}
+                        setChatPresetContext={setChatPresetContext}
+                        presetLabel={presetLabel}
+                        setPresetLabel={setPresetLabel}
+                        presetPrompt={presetPrompt}
+                        setPresetPrompt={setPresetPrompt}
+                        ragFaqs={ragFaqs}
+                        setRagFaqs={setRagFaqs}
                         ragFolders={ragFolders}
                         newRagFolderName={newRagFolderName}
                         setNewRagFolderName={setNewRagFolderName}
@@ -1135,92 +1043,165 @@ const SystemSettings = ({ user }) => {
                         lastRagSyncTimeGemini={lastRagSyncTimeGemini}
                         lastRagSyncTimeClaude={lastRagSyncTimeClaude}
                         ragSyncErrors={ragSyncErrors}
-                    />
-                )}
-
-                {activeTab === 'Finder' && (
-                    <FinderTab
-                        driveRootId={driveRootId}
-                        setDriveRootId={setDriveRootId}
-                        handleSaveDriveRoot={handleSaveDriveRoot}
-                        canManageSettings={canManageSettings}
-                    />
-                )}
-
-                {activeTab === 'Deep Research' && (
-                    <DeepResearchTab
-                        models={models}
-                        claudeModels={claudeModels}
                         isGeminiConfigured={isGeminiConfigured}
                         isClaudeConfigured={isClaudeConfigured}
                         aiProvider={aiProvider}
-                        hasWidget={hasWidget}
-                        hasAction={hasAction}
-                    />
-                )}
-
-                {activeTab === 'Server Monitor' && canManageSettings && (
-                    <McpConnectionsTab 
-                        mcpQuickPrompts={mcpQuickPrompts}
-                        setMcpQuickPrompts={setMcpQuickPrompts}
-                        handleSaveSettings={handleSaveSettings}
-                        models={models}
-                        claudeModels={claudeModels}
-                        currentMcpChatModel={currentMcpChatModel}
-                        handleMcpChatModelChange={handleMcpChatModelChange}
-                        mcpChatSystemInstruction={mcpChatSystemInstruction}
-                        setMcpChatSystemInstruction={setMcpChatSystemInstruction}
-                        mcpChatMaxTurns={mcpChatMaxTurns}
-                        setMcpChatMaxTurns={setMcpChatMaxTurns}
-                        defaultMcpChatSystemInstruction={defaultMcpChatSystemInstruction}
-                        canManageSettings={canManageSettings}
-                        user={user}
-                    />
-                )}
-
-                {activeTab === 'Chat Config' && (
-                    <ChatConfigTab
-                        chatPresets={chatPresets}
-                        setChatPresets={setChatPresets}
-                        chatPresetContext={chatPresetContext}
-                        setChatPresetContext={setChatPresetContext}
-                        presetLabel={presetLabel}
-                        setPresetLabel={setPresetLabel}
-                        presetPrompt={presetPrompt}
-                        setPresetPrompt={setPresetPrompt}
-                        ragFaqs={ragFaqs}
-                        setRagFaqs={setRagFaqs}
-                        canManageSettings={canManageSettings}
-                    />
-                )}
-
-                {activeTab === 'Pods' && (
-                    <PodsTab user={user} hasAction={hasAction} />
-                )}
-
-                {activeTab === 'Security Logs' && canManageSettings && (
-                    <SecurityLogsTab />
-                )}
-
-                {activeTab === 'Work Policy' && hasAction('action:manage_work_policy') && (
-                    <WorkPolicyTab
-                        initialPolicy={companyWorkPolicy}
-                        onSave={handleSaveWorkPolicy}
-                    />
-                )}
-
-                {activeTab === 'Antigravity Agent' && (
-                    <AntigravityAgentTab
-                        initialConfig={{
-                            antigravityAgentModel,
-                            antigravityAgentInstructions,
-                            antigravityAgentSafetyPolicy,
-                            antigravityAgentExternalPolicyEnabled,
-                            antigravityAgentMcpServers
+                        driveRootId={driveRootId}
+                        setDriveRootId={setDriveRootId}
+                        handleSaveDriveRoot={handleSaveDriveRoot}
+                        geminiLiveAvailableModels={geminiLiveAvailableModels}
+                        setGeminiLiveAvailableModels={setGeminiLiveAvailableModels}
+                        geminiLiveDefaultModel={geminiLiveDefaultModel}
+                        setGeminiLiveDefaultModel={setGeminiLiveDefaultModel}
+                        onPluginsChanged={(pluginData) => {
+                            if (pluginData?.installedWidgets || pluginData?.installed) {
+                                setInstalledWidgets(pluginData.installedWidgets || pluginData.installed);
+                            }
                         }}
-                        onSave={handleSaveAntigravityAgentSettings}
-                        isReadOnly={!hasAction('action:manage_system_settings') || (user?.email?.split('@')[1]?.toLowerCase() !== 'techiespod.jp')}
                     />
+                )}
+
+                {/* Category 3: ZTA PDP 2-Tier Policy Matrix */}
+                {activeTab === 'ZTA PDP' && isSystemAdmin && (
+                    <ZtaPolicyMatrixTab
+                        installedWidgets={installedWidgets}
+                        ragFolders={ragFolders}
+                        onPoliciesUpdated={(updatedRbac) => setRbacPolicies(updatedRbac)}
+                    />
+                )}
+
+                {/* Category 4: Organization (Users & Pods) */}
+                {activeTab === 'Organization' && isSystemAdmin && (
+                    <div className="space-y-5">
+                        <div className="inline-flex rounded-xl bg-gray-200/80 p-1 gap-1">
+                            <button
+                                type="button"
+                                onClick={() => setOrgSubTab('users')}
+                                className={`px-4 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition ${
+                                    orgSubTab === 'users' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-600 hover:text-gray-900'
+                                }`}
+                            >
+                                👥 ユーザー管理・招待
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setOrgSubTab('pods')}
+                                className={`px-4 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition ${
+                                    orgSubTab === 'pods' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-600 hover:text-gray-900'
+                                }`}
+                            >
+                                🏢 ビジネスドメイン / Pod 編成
+                            </button>
+                        </div>
+
+                        {orgSubTab === 'users' ? (
+                            <UsersTab user={user} rbacPolicies={rbacPolicies} hasAction={hasAction} />
+                        ) : (
+                            <PodsTab user={user} hasAction={hasAction} />
+                        )}
+                    </div>
+                )}
+
+                {/* Category 5: Core System & ZTA Security Audit Logs */}
+                {activeTab === 'Core & Audit' && canManageSettings && (
+                    <div className="space-y-5">
+                        <div className="inline-flex flex-wrap rounded-xl bg-gray-200/80 p-1 gap-1">
+                            {[
+                                { id: 'oauth', label: '🔐 Google OAuth & セッション保護' },
+                                { id: 'audit', label: '🛡️ ZTA セキュリティ監査ログ' },
+                                { id: 'policy', label: '📜 全社 AI ワークポリシー' },
+                                { id: 'skills', label: '🧩 外部カスタムスキル登録' },
+                                { id: 'legacy-roles', label: '⚙️ レガシー RBAC 詳細' }
+                            ].map(t => (
+                                <button
+                                    key={t.id}
+                                    type="button"
+                                    onClick={() => setCoreAdminSubTab(t.id)}
+                                    className={`px-3.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition ${
+                                        coreAdminSubTab === t.id ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-600 hover:text-gray-900'
+                                    }`}
+                                >
+                                    {t.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {coreAdminSubTab === 'oauth' && (
+                            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
+                                <h2 className="font-bold text-sm text-gray-900">Google OAuth 認証 & ZTA セッションロック設定</h2>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-medium text-gray-600 mb-1">Google OAuth Client ID</label>
+                                        <input
+                                            type="text"
+                                            value={googleClientId}
+                                            onChange={(e) => setGoogleClientId(e.target.value)}
+                                            placeholder="Enter OAuth Client ID"
+                                            className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-white text-xs"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-gray-600 mb-1">Google OAuth Client Secret</label>
+                                        <input
+                                            type="password"
+                                            value={googleClientSecret}
+                                            onChange={(e) => setGoogleClientSecret(e.target.value)}
+                                            placeholder={isConfigured ? '•••••••••••••••• (設定済)' : 'Enter OAuth Client Secret'}
+                                            className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-white text-xs"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="pt-3 border-t border-gray-100">
+                                    <div className="flex justify-between items-center mb-1">
+                                        <label className="text-xs font-semibold text-gray-800">
+                                            🔒 ZTA セッションロック最大反復回数 (30分無操作 × N回で強制ログアウト)
+                                        </label>
+                                        <span className="text-xs font-mono text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                                            30分 × {sessionLockMaxCount || 6}回 = 計 {(Number(sessionLockMaxCount) || 6) * 30}分
+                                        </span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="1"
+                                        max="24"
+                                        value={sessionLockMaxCount || 6}
+                                        onChange={(e) => setSessionLockMaxCount(Number(e.target.value))}
+                                        className="w-full accent-indigo-600 cursor-pointer"
+                                    />
+                                </div>
+
+                                <div className="pt-2 flex justify-end">
+                                    <button
+                                        type="button"
+                                        onClick={handleSaveSettings}
+                                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold cursor-pointer"
+                                    >
+                                        💾 コア認証設定を保存
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {coreAdminSubTab === 'audit' && <SecurityLogsTab />}
+
+                        {coreAdminSubTab === 'policy' && (
+                            <WorkPolicyTab
+                                initialPolicy={companyWorkPolicy}
+                                onSave={handleSaveWorkPolicy}
+                            />
+                        )}
+
+                        {coreAdminSubTab === 'skills' && <SkillsTab />}
+
+                        {coreAdminSubTab === 'legacy-roles' && (
+                            <ZtaPolicyMatrixTab
+                                installedWidgets={installedWidgets}
+                                ragFolders={ragFolders}
+                                onPoliciesUpdated={(updatedRbac) => setRbacPolicies(updatedRbac)}
+                            />
+                        )}
+                    </div>
                 )}
             </div>
         </div>

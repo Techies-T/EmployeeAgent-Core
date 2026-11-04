@@ -15,6 +15,8 @@ const { encrypt, decrypt } = require('./crypto.cjs');
 const crypto = require('crypto');
 const mcpChatRouter = require('./routes/mcpChat.cjs');
 const llmAdapter = require('./services/llmAdapter.cjs');
+const pluginManager = require('./services/pluginManager.cjs');
+const ztaPdpService = require('./services/ztaPdpService.cjs');
 
 // クライアントのIPアドレスおよびUser-AgentからZTA用のハッシュを生成するヘルパー関数
 function getContextHashes(req) {
@@ -279,6 +281,7 @@ app.get('/api/config', async (req, res) => {
         }
 
         const sessionLockMaxCount = await getSessionLockMaxCount();
+        const pluginCatalogData = await pluginManager.getFullPluginCatalog();
 
         // Unauthenticated or timed-out requests only receive public bootstrap status
         if (!isAuthenticatedSession) {
@@ -289,7 +292,10 @@ app.get('/api/config', async (req, res) => {
                 isGeminiConfigured: !!geminiKey,
                 isClaudeConfigured: !!claudeKey,
                 aiProvider,
-                sessionLockMaxCount
+                sessionLockMaxCount,
+                installedWidgets: pluginCatalogData.installedWidgets,
+                availableAddons: pluginCatalogData.availableAddons,
+                capabilities: pluginCatalogData.capabilities
             });
         }
 
@@ -386,6 +392,12 @@ app.get('/api/config', async (req, res) => {
         const mcpChatMaxTurns = parseInt(await db.getSetting('MCP_CHAT_MAX_TURNS')) || 15;
         const defaultMcpChatSystemInstruction = mcpChatRouter.DEFAULT_MCP_CHAT_SYSTEM_INSTRUCTION || '';
 
+        // Widget Plugin & Capability Bus State (EmployeeAgent-Core Microkernel)
+        const chatAiProvider = await db.getSetting('CHAT_AI_PROVIDER') || aiProvider;
+        const mcpAiProvider = await db.getSetting('MCP_AI_PROVIDER') || aiProvider;
+        const ragAiProvider = await db.getSetting('RAG_AI_PROVIDER') || aiProvider;
+        const researchAiProvider = await db.getSetting('RESEARCH_AI_PROVIDER') || aiProvider;
+
         res.json({
             clientId, // Expose full client ID for frontend auth
             maskedClientId,
@@ -393,6 +405,13 @@ app.get('/api/config', async (req, res) => {
             isGeminiConfigured: !!geminiKey,
             isClaudeConfigured: !!claudeKey,
             aiProvider,
+            chatAiProvider,
+            mcpAiProvider,
+            ragAiProvider,
+            researchAiProvider,
+            installedWidgets: pluginCatalogData.installedWidgets,
+            availableAddons: pluginCatalogData.availableAddons,
+            capabilities: pluginCatalogData.capabilities,
             geminiModel,
             claudeModel,
             googleDriveRootId: googleDriveRootId || '',
@@ -810,6 +829,7 @@ app.use('/api/mcp/meta', requireWidgetAccess('app:mcp-chat'), require('./routes/
 app.use('/api/local-rag', requireAuth, require('./routes/localRag.cjs'));
 app.use('/api/gemini-live', requireAuth, require('./routes/geminiLive.cjs').router);
 app.use('/api/zta/audit', requireAuth, require('./routes/ztaAudit.cjs'));
+app.use('/api/core', requireAuthIfConfigured, require('./routes/corePlugins.cjs'));
 
 // MCP Tool Execution Route
 const { callMcpTool } = require('./mcpClient.cjs');
@@ -980,14 +1000,47 @@ app.post('/api/auth/google', async (req, res) => {
                             maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
                         });
 
+                        const hydratedPdp = ztaPdpService.hydrateAllPolicies(rbacPolicies);
+                        const widgetLevels = {};
+                        const podScopes = {};
+                        for (const w of pluginManager.WIDGET_CATALOG) {
+                            if (isAdmin) {
+                                widgetLevels[w.id] = 'manage';
+                            } else {
+                                let bestRank = 0;
+                                let bestLevel = 'none';
+                                for (const r of roles) {
+                                    const lvl = hydratedPdp[r]?.v2_matrix?.[w.id]?.level || 'none';
+                                    const rnk = ztaPdpService.LEVEL_RANK[lvl] || 0;
+                                    if (rnk > bestRank) {
+                                        bestRank = rnk;
+                                        bestLevel = lvl;
+                                    }
+                                }
+                                widgetLevels[w.id] = bestLevel;
+                            }
+                        }
+                        for (const r of roles) {
+                            const pScopes = hydratedPdp[r]?.pod_scopes || {};
+                            for (const [pId, pPerm] of Object.entries(pScopes)) {
+                                if (pPerm === 'manage' || pPerm === 'write') {
+                                    podScopes[pId] = 'write';
+                                } else if (pPerm === 'read' && !podScopes[pId]) {
+                                    podScopes[pId] = 'read';
+                                }
+                            }
+                        }
+
                         db.get("SELECT * FROM users WHERE id = ?", [userId], (err, finalUser) => {
                             if (err || !finalUser) {
-                                return res.json({ user: { id: userId, googleId, email, name, role, allowed_widgets, allowed_actions, allowed_models } });
+                                return res.json({ user: { id: userId, googleId, email, name, role, allowed_widgets, allowed_actions, allowed_models, widget_levels: widgetLevels, pod_scopes: isAdmin ? { '*': 'write' } : podScopes } });
                             }
                             // Also set the allowed sets for the frontend
                             finalUser.allowed_widgets = allowed_widgets;
                             finalUser.allowed_actions = allowed_actions;
                             finalUser.allowed_models = allowed_models;
+                            finalUser.widget_levels = widgetLevels;
+                            finalUser.pod_scopes = isAdmin ? { '*': 'write' } : podScopes;
                             res.json({ user: finalUser });
                         });
                     }
@@ -1068,6 +1121,63 @@ app.post('/api/auth/google', async (req, res) => {
             details: { error: error.message }
         });
         res.status(500).json({ error: 'Authentication failed' });
+    }
+});
+
+// Local Dev / Container Quick Login (strictly restricted to localhost requests)
+app.post('/api/auth/local-dev-login', async (req, res) => {
+    const reqHost = (req.headers.host || req.hostname || '').split(':')[0];
+    if (reqHost !== 'localhost' && reqHost !== '127.0.0.1') {
+        return res.status(403).json({ error: 'Local dev login is only available on localhost.' });
+    }
+    try {
+        db.get("SELECT * FROM users WHERE role LIKE '%admin%' ORDER BY id ASC LIMIT 1", [], async (err, adminUser) => {
+            if (err || !adminUser) {
+                return res.status(404).json({ error: '管理者ユーザーがDBに存在しません。Googleログインを実行してください。' });
+            }
+            const nowIso = new Date().toISOString();
+            db.run("UPDATE users SET last_active_at = ?, status_text = 'Active' WHERE id = ?", [nowIso, adminUser.id]);
+
+            const widgetLevels = {};
+            for (const w of pluginManager.WIDGET_CATALOG) {
+                widgetLevels[w.id] = 'manage';
+            }
+            const hashes = getContextHashes(req);
+            const token = jwt.sign(
+                {
+                    id: adminUser.id,
+                    googleId: adminUser.google_id,
+                    email: adminUser.email,
+                    name: adminUser.name,
+                    role: adminUser.role,
+                    allowed_widgets: ['*'],
+                    allowed_actions: ['*'],
+                    allowed_models: ['*'],
+                    allowed_pods: ['*'],
+                    ip_hash: hashes.ipHash,
+                    ua_hash: hashes.uaHash
+                },
+                process.env.JWT_SECRET || 'secret',
+                { expiresIn: '7d' }
+            );
+            res.cookie('token', token, getSessionCookieOptions(req));
+            res.json({
+                user: {
+                    ...adminUser,
+                    last_active_at: nowIso,
+                    status_text: 'Active',
+                    allowed_widgets: ['*'],
+                    allowed_actions: ['*'],
+                    allowed_models: ['*'],
+                    allowed_pods: ['*'],
+                    widget_levels: widgetLevels,
+                    pod_scopes: { '*': 'write' }
+                }
+            });
+        });
+    } catch (error) {
+        console.error('Local Dev Login Error:', error);
+        res.status(500).json({ error: 'Local dev login failed' });
     }
 });
 
@@ -1236,6 +1346,40 @@ app.get('/api/auth/me', (req, res) => {
                 user.allowed_actions = (isAdmin || allowed_actions_set.has('*')) ? ['*'] : Array.from(allowed_actions_set);
                 user.allowed_models = (isAdmin || hasWildcardModels) ? ['*'] : Array.from(allowed_models_set);
                 user.allowed_pods = (isAdmin || allowed_pods_set.has('*')) ? ['*'] : Array.from(allowed_pods_set);
+
+                // Evaluate 3D ZTA PDP widget permission levels (none | read | execute | manage) and pod scopes
+                const hydratedPdp = ztaPdpService.hydrateAllPolicies(rbacPolicies);
+                const widgetLevels = {};
+                const podScopes = {};
+                for (const w of pluginManager.WIDGET_CATALOG) {
+                    if (isAdmin) {
+                        widgetLevels[w.id] = 'manage';
+                    } else {
+                        let bestRank = 0;
+                        let bestLevel = 'none';
+                        for (const r of roles) {
+                            const lvl = hydratedPdp[r]?.v2_matrix?.[w.id]?.level || 'none';
+                            const rnk = ztaPdpService.LEVEL_RANK[lvl] || 0;
+                            if (rnk > bestRank) {
+                                bestRank = rnk;
+                                bestLevel = lvl;
+                            }
+                        }
+                        widgetLevels[w.id] = bestLevel;
+                    }
+                }
+                for (const r of roles) {
+                    const pScopes = hydratedPdp[r]?.pod_scopes || {};
+                    for (const [pId, pPerm] of Object.entries(pScopes)) {
+                        if (pPerm === 'manage' || pPerm === 'write') {
+                            podScopes[pId] = 'write';
+                        } else if (pPerm === 'read' && !podScopes[pId]) {
+                            podScopes[pId] = 'read';
+                        }
+                    }
+                }
+                user.widget_levels = widgetLevels;
+                user.pod_scopes = isAdmin ? { '*': 'write' } : podScopes;
 
                 // Re-issue JWT to ensure subsequent API calls (PEP) succeed with fresh permissions
                 const newToken = jwt.sign(
@@ -2497,10 +2641,10 @@ function requirePermission(action) {
     };
 }
 
-// Middleware to check widget access (PEP)
+// Middleware to check widget access (PEP) + Universal Grant operation_level check
 function requireWidgetAccess(widgetId) {
     return (req, res, next) => {
-        const evaluateWidgetPermission = () => {
+        const evaluateWidgetPermission = async () => {
             const allowedWidgets = req.user.allowed_widgets || [];
             const hasAccess = allowedWidgets.includes('*') || allowedWidgets.includes(widgetId);
             
@@ -2516,6 +2660,31 @@ function requireWidgetAccess(widgetId) {
                 });
                 return res.status(403).json({ error: `Access denied. Requires widget access: ${widgetId}` });
             }
+
+            // Enforce read_only vs execute/read_write on DeepResearch & Knowledge Base mutation endpoints
+            const cleanWidgetId = String(widgetId).replace(/^app:/, '');
+            if (req.method === 'POST' && (cleanWidgetId === 'deep-research' || cleanWidgetId === 'knowledge-base')) {
+                const isKnowledgeCreation = cleanWidgetId === 'knowledge-base' && (req.path === '/' || req.path === '');
+                const isDeepResearchStart = cleanWidgetId === 'deep-research' && (req.path === '/' || req.path === '' || req.path.includes('/start'));
+                if (isKnowledgeCreation || isDeepResearchStart) {
+                    const effLevel = await ztaPdpService.evaluateUserWidgetLevel(req.user, cleanWidgetId);
+                    if (effLevel === 'read') {
+                        auditDb.logEvent({
+                            userId: req.user.id,
+                            userEmail: req.user.email,
+                            eventType: 'permission_denied',
+                            action: `${req.method} ${req.originalUrl}`,
+                            status: 'blocked',
+                            req: req,
+                            details: { requiredWidget: widgetId, effectiveLevel: effLevel, reason: 'Blocked by read_only widget grant' }
+                        });
+                        return res.status(403).json({
+                            error: `Access denied (ZTA PEP): このロールは「参照のみ (read_only)」権限のため、${cleanWidgetId === 'deep-research' ? '新規 DeepResearch 調査の実行' : 'ナレッジベースへの新規記事登録'}はブロックされました。`
+                        });
+                    }
+                }
+            }
+
             return next();
         };
 

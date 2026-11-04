@@ -116,8 +116,18 @@ const renderSourceInfo = (sourceInfo) => {
     return null;
 };
 
-const Gemini = ({ user: initialUser }) => {
+const Gemini = ({ user: initialUser, capabilities = [], onOpen, initialBriefingReport = null }) => {
     const [currentUser, setCurrentUser] = useState(initialUser || null);
+    const [activeBriefingReport, setActiveBriefingReport] = useState(initialBriefingReport || null);
+    const hasRagCapability = Array.isArray(capabilities) && capabilities.includes('capability:rag-context');
+    const hasKnowledgeStoreCapability = Array.isArray(capabilities) && capabilities.includes('capability:knowledge-store');
+    const hasDeepResearchCapability = Array.isArray(capabilities) && capabilities.includes('capability:deep-research');
+
+    useEffect(() => {
+        if (initialBriefingReport) {
+            setActiveBriefingReport(initialBriefingReport);
+        }
+    }, [initialBriefingReport]);
     const [mode, setMode] = useState('normal');
     const [useGrounding, setUseGrounding] = useState(true);
     const [messages, setMessages] = useState([]);
@@ -585,8 +595,12 @@ const Gemini = ({ user: initialUser }) => {
             }
 
             // Start Job
+            const enrichedMessage = activeBriefingReport
+                ? `【事前共有ブリーフィングレポート参照: ${activeBriefingReport.title}】\n${(activeBriefingReport.content || '').slice(0, 12000)}\n\n---\n【ユーザーの質問・深掘り指示】\n${userMessage.text}`
+                : userMessage.text;
+
             const requestBody = {
-                message: userMessage.text,
+                message: enrichedMessage,
                 history: history,
                 previous_interaction_id: previousInteractionId,
                 environment_id: environmentId,
@@ -755,13 +769,19 @@ const Gemini = ({ user: initialUser }) => {
                                 style={{ backgroundImage: 'none' }}
                             >
                                 <option value="normal" className="text-gray-800">💬 Normal Chat</option>
-                                <option value="local_rag" className="text-gray-800">🛡️ Gemma 4 Local RAG (完全社内完結)</option>
-                                {accessibleRagFolders.map((f, idx) => (
+                                {hasRagCapability && (
+                                    <option value="local_rag" className="text-gray-800">🛡️ Gemma 4 Local RAG (完全社内完結)</option>
+                                )}
+                                {hasRagCapability && accessibleRagFolders.map((f, idx) => (
                                     <option key={f.id || idx} value={`rag_${f.id}`} className="text-gray-800">📚 Cloud: {f.name}</option>
                                 ))}
                                 <option value="gemma4" className="text-gray-800">🦙 Gemma 4 (Direct)</option>
-                                <option value="research" className="text-gray-800">🔍 Deep Research</option>
-                                <option value="html_svg" className="text-gray-800">🎨 HTML/SVG Dev</option>
+                                {hasDeepResearchCapability && (
+                                    <option value="research" className="text-gray-800">🔍 Deep Research</option>
+                                )}
+                                {hasDeepResearchCapability && (
+                                    <option value="html_svg" className="text-gray-800">🎨 HTML/SVG Dev</option>
+                                )}
                             </select>
                             <span className="text-white/80 text-[10px] pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 transform">▼</span>
                         </div>
@@ -994,7 +1014,8 @@ const Gemini = ({ user: initialUser }) => {
                                                                 return (
                                                                     <HtmlPreviewCodeBlock
                                                                         code={codeStr}
-                                                                        onSaveToKnowledge={handleOpenSaveKnowledge}
+                                                                        onSaveToKnowledge={hasKnowledgeStoreCapability ? handleOpenSaveKnowledge : undefined}
+                                                                        onOpen={onOpen}
                                                                     />
                                                                 );
                                                             }
@@ -1055,17 +1076,28 @@ const Gemini = ({ user: initialUser }) => {
                                         </>
                                     )}
                                     {msg.role === 'model' && (
-                                        <button onClick={() => handleCopy(msg.text, index)} className="text-white/60 hover:text-white transition-colors" title="Copy to clipboard">
-                                            {copiedIndex === index ? (
-                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-green-400">
-                                                    <path fillRule="evenodd" d="M19.916 4.626a.75.75 0 01.208 1.04l-9 13.5a.75.75 0 01-1.154.114l-6-6a.75.75 0 011.06-1.06l5.353 5.353 8.493-12.739a.75.75 0 011.04-.208z" clipRule="evenodd" />
-                                                </svg>
-                                            ) : (
-                                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3.5 h-3.5">
-                                                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
-                                                </svg>
+                                        <div className="flex items-center gap-2">
+                                            <button onClick={() => handleCopy(msg.text, index)} className="text-white/60 hover:text-white transition-colors" title="Copy to clipboard">
+                                                {copiedIndex === index ? (
+                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-green-400">
+                                                        <path fillRule="evenodd" d="M19.916 4.626a.75.75 0 01.208 1.04l-9 13.5a.75.75 0 01-1.154.114l-6-6a.75.75 0 011.06-1.06l5.353 5.353 8.493-12.739a.75.75 0 011.04-.208z" clipRule="evenodd" />
+                                                    </svg>
+                                                ) : (
+                                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-3.5 h-3.5">
+                                                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
+                                                    </svg>
+                                                )}
+                                            </button>
+                                            {hasKnowledgeStoreCapability && (
+                                                <button
+                                                    onClick={() => handleOpenSaveKnowledge(msg.text, '経営会議・分析メモ')}
+                                                    className="text-[11px] px-2 py-0.5 rounded-full bg-white/15 hover:bg-white/25 text-white border border-white/20 transition-colors flex items-center gap-1"
+                                                    title="ナレッジベース（経営会議ブリーフィング）に登録"
+                                                >
+                                                    <span>📚 ナレッジに登録</span>
+                                                </button>
                                             )}
-                                        </button>
+                                        </div>
                                     )}
                                 </div>
                             </div>
@@ -1137,6 +1169,51 @@ const Gemini = ({ user: initialUser }) => {
                                         </div>
                                     );
                                 })}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Executive Meeting Briefing Context Banner */}
+                    {activeBriefingReport && (
+                        <div className="mb-2.5 px-3.5 py-2.5 rounded-2xl bg-indigo-950/70 border border-indigo-400/40 backdrop-blur-xl text-white shadow-lg flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                    <span className="px-2 py-0.5 rounded-full bg-indigo-500/40 border border-indigo-300/40 text-[10px] font-bold tracking-wide flex-shrink-0">
+                                        📊 経営会議ブリーフィング参照中
+                                    </span>
+                                    <span className="text-xs font-semibold truncate">
+                                        {activeBriefingReport.title}
+                                    </span>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setActiveBriefingReport(null)}
+                                    className="text-[11px] text-indigo-200 hover:text-white px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 flex-shrink-0"
+                                >
+                                    解除 ✕
+                                </button>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setInput('この全社まとめレポートを踏まえ、単一ビジネスドメインにおける潜在課題と、第2四半期(Q2)にアクセルを踏むべき成長領域について経営視点でアドバイスしてください。');
+                                        inputRef.current?.focus();
+                                    }}
+                                    className="text-[11px] px-2.5 py-1 rounded-full bg-indigo-500/30 hover:bg-indigo-500/50 border border-indigo-300/30 text-indigo-100 transition-colors"
+                                >
+                                    💡 単一ドメイン課題 & Q2投資判断のAI壁打ち
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setInput('この事前共有レポートに対して、経営会議で議論すべき重要アジェンダと想定される質問・反論を3点に整理してください。');
+                                        inputRef.current?.focus();
+                                    }}
+                                    className="text-[11px] px-2.5 py-1 rounded-full bg-indigo-500/30 hover:bg-indigo-500/50 border border-indigo-300/30 text-indigo-100 transition-colors"
+                                >
+                                    📋 経営会議のアジェンダ・論点抽出
+                                </button>
                             </div>
                         </div>
                     )}

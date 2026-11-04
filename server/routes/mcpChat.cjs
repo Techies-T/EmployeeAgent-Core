@@ -5,6 +5,7 @@ const { GoogleGenAI } = require("@google/genai");
 const { getAllMcpToolsForGemini, callMcpTool, getMcpMetadata } = require('../mcpClient.cjs');
 const db = require('../db.cjs');
 const llmAdapter = require('../services/llmAdapter.cjs');
+const mcpHarnessService = require('../services/mcpHarnessService.cjs');
 
 // Initialize Gemini client
 function getGeminiClient(apiKey) {
@@ -350,7 +351,7 @@ async function executeMcpWorkflow({ user, message, previous_interaction_id, envi
             mcpTools = filtered;
         }
     } else if (!isMetaListQuery) {
-        const matchedDomains = new Set();
+        const matchedDomains = mcpHarnessService.matchDomainsForPrompt(message || '');
 
         const isBaseball = msgLower.includes('阪神') || msgLower.includes('タイガース') || msgLower.includes('ホークス') ||
                            msgLower.includes('npb') || msgLower.includes('野球') || msgLower.includes('セ・リーグ') || msgLower.includes('パ・リーグ') ||
@@ -418,10 +419,26 @@ async function executeMcpWorkflow({ user, message, previous_interaction_id, envi
 
     const toolDescriptions = mcpTools.map(t => `- **${t.name}** (${t.serverName || 'MCP'}): ${t.description}`).join('\n');
 
+    // Collect dynamic domain routing instructions & ZTA Universal Grant scope guards
+    const activeDomainInstructions = Array.from(new Set(mcpTools.map(t => t.routingInstruction).filter(Boolean)));
+    const activeScopeGuards = Array.from(new Set(mcpTools.map(t => t.scopePromptGuard).filter(Boolean)));
+    const hasDirectPublicServer = mcpTools.some(t => t.connectionMode === 'direct_public');
+    const harnessCfg = mcpHarnessService.getHarnessConfig();
+    const directPublicGuard = hasDirectPublicServer && harnessCfg?.global_routing?.public_direct_guard
+        ? `\n[Direct Public MCP Outbound Guard]: ${harnessCfg.global_routing.public_direct_guard}`
+        : '';
+
+    const ztaGuardSection = (activeScopeGuards.length > 0 || activeDomainInstructions.length > 0 || directPublicGuard)
+        ? `\n\nZTA ROLE DATA SCOPE & DYNAMIC HARNESS RULES (MANDATORY):\n` +
+          activeDomainInstructions.map(inst => `- [Domain Routing]: ${inst}`).join('\n') +
+          (activeScopeGuards.length > 0 ? '\n' + activeScopeGuards.map(g => `- [Role Scope Constraint]: ${g}`).join('\n') : '') +
+          directPublicGuard
+        : '';
+
     const customInstruction = await db.getSetting('MCP_CHAT_SYSTEM_INSTRUCTION');
     const baseInstruction = (customInstruction && customInstruction.trim()) ? customInstruction.trim() : DEFAULT_MCP_CHAT_SYSTEM_INSTRUCTION;
 
-    const systemInstruction = `${baseInstruction}
+    const systemInstruction = `${baseInstruction}${ztaGuardSection}
 
 If the user asks what tools are available or what you can do, explicitly list the exact names and descriptions of the tools provided below:
 
