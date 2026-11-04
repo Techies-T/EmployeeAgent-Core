@@ -2,7 +2,7 @@
 
 ## 1. 背景と発生していた課題
 
-`minoru.inui@gmail.com` アカウントにて MCP Chat から **「月別と著者別のインプットトークンとアウトプットトークンをクロス集計して表にして」** というクエリを実行した際、本来呼び出されるべき内蔵の **`Knowledge Base MCP (Built-in)`**（`get_knowledge_token_crosstab` ツール）ではなく、**MariaDB（NPB野球データベース等）の `read_query` / `list_tables` を見に行ってしまう事象** が発生していました。
+`analyst@example.com` アカウントにて MCP Chat から **「月別と著者別のインプットトークンとアウトプットトークンをクロス集計して表にして」** というクエリを実行した際、本来呼び出されるべき内蔵の **`Knowledge Base MCP (Built-in)`**（`get_knowledge_token_crosstab` ツール）ではなく、**MariaDB（NPB野球データベース等）の `read_query` / `list_tables` を見に行ってしまう事象** が発生していました。
 
 一方、管理者アカウント（`admin` ロール）でかつ UI 上のパイプライン選択で明示的に「📚 ナレッジベース」を選択した際には正常に動作していました。
 
@@ -76,10 +76,10 @@ flowchart TD
 
 ## 4. 動作検証エビデンス
 
-`minoru.inui@gmail.com`（ロール: `user,researcher,its`）の権限コンテキストにて、MCP メタデータ取得およびクロス集計ツール（`get_knowledge_token_crosstab`）の実行検証を行い、MariaDB ではなく `Knowledge Base MCP (Built-in)` が正しく呼び出されてクロス集計データが返却されることを確認しました。
+`analyst@example.com`（ロール: `user,researcher,its`）の権限コンテキストにて、MCP メタデータ取得およびクロス集計ツール（`get_knowledge_token_crosstab`）の実行検証を行い、MariaDB ではなく `Knowledge Base MCP (Built-in)` が正しく呼び出されてクロス集計データが返却されることを確認しました。
 
 ```text
-=== ACCESSIBLE SERVERS FOR minoru.inui@gmail.com ===
+=== ACCESSIBLE SERVERS FOR analyst@example.com ===
 - [2] Knowledge Base MCP (Built-in) (knowledge_base): get_author_post_counts, get_knowledge_token_counts, get_knowledge_token_crosstab
 - [4] NPB Baseball (参照専用) (npb_baseball): list_tables, describe_table, read_query
 - [5] NPB Baseball (管理者用 / 参照・更新) (npb_baseball): list_tables, describe_table, read_query, write_query, drop_table

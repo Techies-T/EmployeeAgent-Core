@@ -16,7 +16,7 @@ git push origin staging
 
 echo "⏳ [Step 4/4] Verifying Remote Container Recreation & Health Check..."
 sleep 45
-ssh -i ~/.ssh/id_ed25519_vps -o StrictHostKeyChecking=no debian@133.167.105.49 "docker ps"
+ssh -i ~/.ssh/id_ed25519_vps -o StrictHostKeyChecking=no debian@<YOUR_STAGING_VPS_IP> "docker ps"
 curl -s https://macosui-staging.techiespod.co.jp/api/health
 echo ""
 echo "✅ [SUCCESS] Deployment pipeline completed successfully with verified security checks!"

@@ -26,10 +26,10 @@ db.serialize(() => {
             else console.log("Added ITS role to RBAC_POLICIES");
         });
         
-        // Update minoru.inui@gmail.com to its
-        db.run("UPDATE users SET role = 'its' WHERE email = 'minoru.inui@gmail.com'", (err) => {
+        // Update analyst@example.com to its
+        db.run("UPDATE users SET role = 'its' WHERE email = 'analyst@example.com'", (err) => {
             if (err) console.error("Error updating user", err);
-            else console.log("Updated minoru.inui@gmail.com to ITS role");
+            else console.log("Updated analyst@example.com to ITS role");
         });
     });
 });

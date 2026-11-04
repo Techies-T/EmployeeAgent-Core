@@ -218,8 +218,8 @@ googleDriveRagFolders: [ { id: '1mCi4tb6tSWrAcV84xSP6uZIsjYa7NAZ4', name: 'Gemin
 [DB Factory] Loaded SQLite Adapter
 Connected to the SQLite database.
 ✅ Verified active users in database (2 users found):
-   - 戌亥稔 (minoru.inui@techiespod.jp) [admin]
-   - Minoru Inui (minoru.inui@gmail.com) [user,data_analyst]
+   - 戌亥稔 (admin@example.com) [admin]
+   - Minoru Inui (analyst@example.com) [user,data_analyst]
 🎉 [SUCCESS] Deployment completed smoothly with zero data loss!
 ```
 
