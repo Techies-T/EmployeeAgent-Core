@@ -219,6 +219,14 @@ const KnowledgeBase = ({ user, onOpen, capabilities = [] }) => {
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
                 
+                if (line.startsWith('#### ')) {
+                    elements.push(<h4 key={i} className="text-sm font-bold mt-3 mb-1 text-blue-300">{processText(line.replace('#### ', ''), i)}</h4>);
+                    continue;
+                }
+                if (line.startsWith('### ')) {
+                    elements.push(<h3 key={i} className="text-base font-bold mt-3.5 mb-1.5 text-gray-100">{processText(line.replace('### ', ''), i)}</h3>);
+                    continue;
+                }
                 if (line.startsWith('## ')) {
                     elements.push(<h2 key={i} className="text-xl font-bold mt-4 mb-2 text-white">{processText(line.replace('## ', ''), i)}</h2>);
                     continue;

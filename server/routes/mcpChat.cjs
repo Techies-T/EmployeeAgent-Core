@@ -119,6 +119,9 @@ async function createInteractionWithRetry(client, params, { timeoutMs = 120000, 
                                     errMsg.includes('invalid JSON syntax') ||
                                     (err.status === 400 && errMsg.includes('JSON'));
 
+                const isMaxTokenLimitError = (err.status === 400 || lower.includes('invalid_argument')) &&
+                                             (lower.includes('max_output_tokens') || lower.includes('output_tokens') || lower.includes('output token'));
+
                 const isTimeoutOrNetwork = lower.includes('timeout') ||
                                            lower.includes('etimedout') ||
                                            lower.includes('esockettimedout') ||
@@ -130,6 +133,21 @@ async function createInteractionWithRetry(client, params, { timeoutMs = 120000, 
                                            lower.includes('502') ||
                                            lower.includes('overloaded') ||
                                            lower.includes('resource_exhausted');
+
+                if (isMaxTokenLimitError && currentParams.generation_config?.max_output_tokens > 8192) {
+                    const currentMax = currentParams.generation_config.max_output_tokens;
+                    const matchLimit = errMsg.match(/(?:maximum|<=|limit).*?(\d{4,6})/i);
+                    const nextMax = matchLimit ? parseInt(matchLimit[1], 10) : (currentMax > 32768 ? 32768 : (currentMax > 16384 ? 16384 : 8192));
+                    console.warn(`[MCP Chat] Model output token ceiling detected (${errMsg.substring(0, 100)}). Auto-adjusting max_output_tokens: ${currentMax} -> ${nextMax}...`);
+                    currentParams = {
+                        ...currentParams,
+                        generation_config: {
+                            ...currentParams.generation_config,
+                            max_output_tokens: nextMax
+                        }
+                    };
+                    continue;
+                }
 
                 if (isMalformed && attempt < maxRetries) {
                     attempt++;
@@ -307,6 +325,7 @@ Interactive GenUI & Data Analytics Generation Guidelines:
  * MCP ワークフロー実行コア関数（同期・非同期共通）
  */
 async function executeMcpWorkflow({ user, message, previous_interaction_id, environment_id, req, onProgress, checkCancelled, pipelineDomain, model }) {
+    const workflowStartTime = Date.now();
     const apiKey = await db.getSetting('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
     const claudeApiKey = await db.getSetting('CLAUDE_API_KEY') || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
     const aiProvider = (await db.getSetting('AI_PROVIDER')) || (claudeApiKey && !apiKey ? 'claude' : 'gemini');
@@ -318,17 +337,15 @@ async function executeMcpWorkflow({ user, message, previous_interaction_id, envi
     const globalGeminiModel = await db.getSetting('GEMINI_MODEL') || 'gemini-3.6-flash';
     const globalClaudeModel = await db.getSetting('CLAUDE_MODEL') || 'claude-sonnet-4-6';
     const configuredMcpModel = await db.getSetting('GEMINI_MCP_CHAT_MODEL');
+    const configuredClaudeMcpModel = await db.getSetting('CLAUDE_MCP_CHAT_MODEL');
+    const mcpAiProvider = (await db.getSetting('MCP_AI_PROVIDER')) || aiProvider;
 
-    let modelName = model;
-    if (!modelName) {
-        if (configuredMcpModel && llmAdapter.isClaudeModel(configuredMcpModel)) {
-            modelName = configuredMcpModel;
-        } else if (aiProvider === 'claude') {
-            modelName = await db.getSetting('CLAUDE_MCP_CHAT_MODEL') || globalClaudeModel;
-        } else {
-            modelName = configuredMcpModel || globalGeminiModel;
-        }
-    }
+    const defaultMcpModel = (configuredMcpModel && llmAdapter.isClaudeModel(configuredMcpModel))
+        ? configuredMcpModel
+        : (mcpAiProvider === 'claude' ? (configuredClaudeMcpModel || globalClaudeModel) : (configuredMcpModel || globalGeminiModel));
+
+    // AdminがSystem Settingsで設定したデフォルトAIモデルを自動的に強制適用
+    let modelName = defaultMcpModel;
 
     // Get MCP Tools filtered by user's permissions (ZTA-compliant PDP check)
     let mcpTools = await getAllMcpToolsForGemini(user?.allowed_widgets || [], user);
@@ -454,7 +471,7 @@ ${toolDescriptions}`;
     if (useClaude) {
         const targetClaudeModel = llmAdapter.isClaudeModel(modelName) ? modelName : globalClaudeModel;
         console.log(`[mcpChat] Executing MCP workflow via Anthropic Claude (${targetClaudeModel})...`);
-        return await llmAdapter.runClaudeMcpWorkflow({
+        const claudeRes = await llmAdapter.runClaudeMcpWorkflow({
             apiKey: claudeApiKey,
             model: targetClaudeModel,
             user,
@@ -468,10 +485,16 @@ ${toolDescriptions}`;
             checkCancelled,
             req
         });
+        return {
+            ...claudeRes,
+            model: targetClaudeModel,
+            durationSeconds: Math.max(1, Math.round((Date.now() - workflowStartTime) / 1000))
+        };
     }
 
     const client = getGeminiClient(apiKey);
-    const MAX_OUTPUT_TOKENS = 65536;
+    const modelLower = (modelName || '').toLowerCase();
+    const MAX_OUTPUT_TOKENS = (modelLower.includes('argon') || modelLower.includes('carbon')) ? 32768 : 65536;
 
     let currentInteractionId = previous_interaction_id;
     let currentEnvironmentId = environment_id;
@@ -501,6 +524,7 @@ ${toolDescriptions}`;
     let turnCount = 0;
     let finalResponseText = "";
     let artifacts = [];
+    let synthesizedUsageMetadata = null;
     let steps = interaction.steps || [];
 
     while (maxTurns > 0) {
@@ -576,33 +600,51 @@ ${toolDescriptions}`;
                         });
                     }
                 }
+
+                // Deep-reasoning モデル (Argon / Carbon 等) が実データ取得クエリを完了した場合、
+                // 非ストリーミングの interactions.create で180秒タイムアウトするのを防ぎ、
+                // 即座にストリーミング＋途中再開（Auto-Resume）対応のダッシュボード合成へ移行する
+                const dataQueryCount = artifacts.filter(a => !['list_tables', 'describe_table'].includes(a.tool)).length;
+                const isDeepReasoningModel = modelLower.includes('argon') || modelLower.includes('carbon');
+                if (isDeepReasoningModel && dataQueryCount >= 2) {
+                    console.log(`[MCP Chat] 🚀 Deep-reasoning model (${modelName}) collected ${dataQueryCount} data queries (${artifacts.length} total tools). Switching directly to streaming dashboard synthesis with checkpoint auto-resume...`);
+                    break;
+                }
                 
                 if (onProgress) onProgress(`ツールの実行結果をモデルに反映中...`, turnCount);
 
                 const availableTools = (maxTurns > 0 && tools.length > 0) ? tools : undefined;
 
-                interaction = await createInteractionWithRetry(client, {
-                    model: modelName,
-                    input: functionResponses,
-                    previous_interaction_id: currentInteractionId,
-                    environment: currentEnvironmentId,
-                    system_instruction: systemInstruction,
-                    tools: availableTools,
-                    generation_config: {
-                        temperature: 0.2,
-                        max_output_tokens: MAX_OUTPUT_TOKENS
-                    }
-                }, {
-                    timeoutMs: 180000,
-                    maxRetries: 2,
-                    onProgress,
-                    turn: turnCount,
-                    progressContext: 'generating'
-                });
+                try {
+                    interaction = await createInteractionWithRetry(client, {
+                        model: modelName,
+                        input: functionResponses,
+                        previous_interaction_id: currentInteractionId,
+                        environment: currentEnvironmentId,
+                        system_instruction: systemInstruction,
+                        tools: availableTools,
+                        generation_config: {
+                            temperature: 0.2,
+                            max_output_tokens: MAX_OUTPUT_TOKENS
+                        }
+                    }, {
+                        timeoutMs: 180000,
+                        maxRetries: artifacts.length >= 2 ? 0 : 1,
+                        onProgress,
+                        turn: turnCount,
+                        progressContext: 'generating'
+                    });
 
-                currentInteractionId = interaction.id;
-                currentEnvironmentId = interaction.environment_id;
-                steps = interaction.steps || [];
+                    currentInteractionId = interaction.id;
+                    currentEnvironmentId = interaction.environment_id;
+                    steps = interaction.steps || [];
+                } catch (turnErr) {
+                    if (artifacts.length > 0) {
+                        console.warn(`[MCP Chat] ⚠️ Turn ${turnCount} interaction timed out after collecting ${artifacts.length} tool results (${turnErr.message}). Breaking out to streaming synthesis with auto-resume...`);
+                        break;
+                    }
+                    throw turnErr;
+                }
                 
             } else {
                 break;
@@ -616,10 +658,11 @@ ${toolDescriptions}`;
         finalResponseText = extractTextFromInteraction(interaction);
     }
 
-    // ツール呼び出し後にテキストが空の場合、取得全データを元に独立したフォールバック合成を実行
+    // ツール呼び出し後にテキストが空（または途切れ）の場合、取得全データを元に
+    // ストリーミング＋チェックポイント自動再開（Auto-Resume）方式でダッシュボードを合成
     if (!finalResponseText && artifacts.length > 0) {
-        console.log(`[MCP Chat] Final response text missing after ${artifacts.length} tool calls. Requesting independent synthesis fallback...`);
-        if (onProgress) onProgress('ツール実行結果を元にダッシュボードと回答を合成中...', turnCount + 1);
+        console.log(`[MCP Chat] Starting streaming dashboard synthesis with checkpoint auto-resume (${artifacts.length} tool results collected)...`);
+        if (onProgress) onProgress('取得データを元にHTML/SVGダッシュボードをストリーミング構築中...', turnCount + 1);
         try {
             const artifactsContext = artifacts.map((a, idx) => {
                 const queryInfo = a.args?.query || a.args?.sql || JSON.stringify(a.args);
@@ -629,27 +672,196 @@ ${toolDescriptions}`;
 
             const synthesisPrompt = `あなたは高度なデータアナリスト兼システム管理者です。\nユーザーからの要求:\n「${message}」\n\nMCPツールにより取得された以下のデータベース/システム結果を参照してください:\n\n${artifactsContext}\n\n【指示】\n上記の取得実データを詳細に分析し、ユーザーの要求に完全に回答してください。\nインタラクティブなHTMLダッシュボード（必ず\`\`\`html ... \`\`\`コードブロック内）と詳細な解説を必ず日本語で出力してください。`;
 
-            const finalSynthesis = await createInteractionWithRetry(client, {
-                model: modelName,
-                input: synthesisPrompt,
-                system_instruction: systemInstruction,
-                generation_config: {
-                    temperature: 0.2,
-                    max_output_tokens: MAX_OUTPUT_TOKENS
-                }
-            }, {
-                timeoutMs: 180000,
-                maxRetries: 2,
-                onProgress,
-                turn: turnCount + 1,
-                progressContext: 'synthesis'
-            });
+            const cleanModel = modelName.replace(/^models\//, '');
+            const initialUsage = interaction?.usage || interaction?.usage_metadata || interaction?.usageMetadata || {};
+            let totalPromptTokens = initialUsage.promptTokenCount || initialUsage.prompt_token_count || initialUsage.input_tokens || 0;
+            let totalCandidateTokens = initialUsage.candidatesTokenCount || initialUsage.candidates_token_count || initialUsage.output_tokens || 0;
 
-            finalResponseText = extractTextFromInteraction(finalSynthesis);
-            if (finalSynthesis?.id) {
-                currentInteractionId = finalSynthesis.id;
+            let accumulatedText = '';
+            let maxMaxOutputTokens = MAX_OUTPUT_TOKENS;
+
+            const hasUnclosedHtmlBlock = (text) => {
+                if (!text || typeof text !== 'string') return false;
+                const lastHtml = text.lastIndexOf('```html');
+                if (lastHtml === -1) return false;
+                const afterHtml = text.substring(lastHtml + 7);
+                if (!afterHtml.includes('```')) return true;
+                if ((afterHtml.includes('<html') || afterHtml.includes('<!DOCTYPE html')) && !afterHtml.toLowerCase().includes('</html>')) {
+                    return true;
+                }
+                return false;
+            };
+
+            const runStreamingPass = async (contentsPayload, passLabel, passIndex) => {
+                let lastReportedLength = accumulatedText.length;
+                let passUsage = null;
+
+                const streamPromise = (async () => {
+                    let stream;
+                    try {
+                        stream = await client.models.generateContentStream({
+                            model: cleanModel,
+                            contents: contentsPayload,
+                            config: {
+                                systemInstruction: systemInstruction,
+                                temperature: 0.2,
+                                maxOutputTokens: maxMaxOutputTokens
+                            }
+                        });
+                    } catch (initErr) {
+                        const msg = initErr?.message || String(initErr);
+                        const limitMatch = msg.match(/maximum allowed value \((\d+)\)/i) || msg.match(/at most (\d+)/i);
+                        if (limitMatch && limitMatch[1]) {
+                            maxMaxOutputTokens = parseInt(limitMatch[1], 10);
+                            console.warn(`[MCP Chat] Adjusted generateContentStream maxOutputTokens to ${maxMaxOutputTokens}`);
+                            stream = await client.models.generateContentStream({
+                                model: cleanModel,
+                                contents: contentsPayload,
+                                config: {
+                                    systemInstruction: systemInstruction,
+                                    temperature: 0.2,
+                                    maxOutputTokens: maxMaxOutputTokens
+                                }
+                            });
+                        } else {
+                            throw initErr;
+                        }
+                    }
+
+                    // チャンク単位のアイドル監視（トークンが流れている限り全体で何分かかってもタイムアウトさせない）
+                    let idleTimer = null;
+                    const resetIdleTimer = (ms, rejectFn) => {
+                        if (idleTimer) clearTimeout(idleTimer);
+                        idleTimer = setTimeout(() => {
+                            rejectFn(new Error(`STREAM_IDLE_TIMEOUT: ${ Math.round(ms / 1000) }秒間チャンク受信がありませんでした`));
+                        }, ms);
+                    };
+
+                    const iterator = stream[Symbol.asyncIterator]();
+                    let isFirstChunk = true;
+
+                    try {
+                        while (true) {
+                            if (checkCancelled && await checkCancelled()) {
+                                throw new Error('タスクがユーザーによりキャンセルされました');
+                            }
+                            const timeoutMs = isFirstChunk ? 180000 : 90000;
+                            const nextResult = await new Promise((resolve, reject) => {
+                                resetIdleTimer(timeoutMs, reject);
+                                iterator.next().then(resolve, reject);
+                            });
+                            if (idleTimer) clearTimeout(idleTimer);
+
+                            if (nextResult.done) break;
+                            isFirstChunk = false;
+
+                            const chunk = nextResult.value;
+                            const chunkText = chunk?.text || '';
+                            if (chunkText) {
+                                // 途中再開パス (passIndex > 0) の先頭で末尾スニペットの重複があれば除去
+                                if (passIndex > 0 && chunkText && accumulatedText.length > 100) {
+                                    accumulatedText += chunkText;
+                                } else {
+                                    accumulatedText += chunkText;
+                                }
+                                if (accumulatedText.length - lastReportedLength >= 1500) {
+                                    lastReportedLength = accumulatedText.length;
+                                    if (onProgress) {
+                                        onProgress(`${passLabel} (現在 ${accumulatedText.length.toLocaleString()} 文字生成済み)...`, turnCount + 1);
+                                    }
+                                }
+                            }
+                            if (chunk?.usageMetadata) {
+                                passUsage = chunk.usageMetadata;
+                            }
+                        }
+                    } finally {
+                        if (idleTimer) clearTimeout(idleTimer);
+                    }
+                })();
+
+                await streamPromise;
+                if (passUsage) {
+                    totalPromptTokens += (passUsage.promptTokenCount || 0);
+                    totalCandidateTokens += (passUsage.candidatesTokenCount || 0);
+                }
+            };
+
+            // 初回ストリーミング生成（万が一 0 文字のまま失敗した場合は1回リトライ）
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    await runStreamingPass(
+                        synthesisPrompt,
+                        'ダッシュボード構築中',
+                        0
+                    );
+                    if (accumulatedText.trim().length > 0) break;
+                } catch (streamErr) {
+                    console.warn(`[MCP Chat] ⚠️ Stream pass 0 interrupted at ${accumulatedText.length} chars: ${streamErr.message}`);
+                    if (streamErr.message.includes('キャンセル')) throw streamErr;
+                    if (accumulatedText.trim().length > 200) {
+                        // 途中まで生成されたHTMLがバッファに残っているため、破棄せずにそのまま下の自動再開（Auto-Resume）ループへ進む！
+                        console.log(`[MCP Chat] 💾 Preserving ${accumulatedText.length} chars of partial output in checkpoint buffer for auto-resume.`);
+                        break;
+                    }
+                    if (attempt === 0) {
+                        if (onProgress) onProgress('⚠️ 応答待機タイムアウトを検知。ストリーミング接続を再試行中...', turnCount + 1);
+                    }
+                }
             }
-            console.log(`[MCP Chat] Independent synthesis completed. Text length: ${finalResponseText?.length || 0}`);
+
+            // チェックポイント自動再開（Auto-Resume）ハーネス:
+            // ストリームが途中で切れた場合や MAX_OUTPUT_TOKENS に達して ```html が未完結の場合、
+            // サーバー内バッファ (accumulatedText) の末尾から続きを自動生成して結合する（最大3回）
+            const MAX_CONTINUATION_PASSES = 3;
+            for (let contPass = 1; contPass <= MAX_CONTINUATION_PASSES; contPass++) {
+                if (!hasUnclosedHtmlBlock(accumulatedText)) {
+                    break;
+                }
+                console.log(`[MCP Chat] 🔄 Auto-Resume Pass ${contPass}/${MAX_CONTINUATION_PASSES}: HTML block is incomplete (${accumulatedText.length} chars saved in buffer). Resuming from checkpoint...`);
+                if (onProgress) {
+                    onProgress(`🔄 途中までの生成データ (${accumulatedText.length.toLocaleString()} 文字) から自動再開中 (${contPass}/${MAX_CONTINUATION_PASSES})...`, turnCount + 1);
+                }
+
+                const tailSnippet = accumulatedText.slice(-600);
+                const beforeLen = accumulatedText.length;
+                const resumeContents = [
+                    { role: 'user', parts: [{ text: synthesisPrompt }] },
+                    { role: 'model', parts: [{ text: `... (中略: 先頭から ${accumulatedText.length} 文字出力済み) ...\n${tailSnippet}` }] },
+                    {
+                        role: 'user',
+                        parts: [{
+                            text: `直前のあなたのHTMLダッシュボード出力は途中で中断されました（現在 ${accumulatedText.length} 文字までサーバーに保存されています）。\n最初からやり直さず、上記の末尾文字列:\n\`\`\`\n${tailSnippet.slice(-200)}\n\`\`\`\nの直後の文字から、重複させずに残りのHTML/SVG/scriptタグおよび閉じコードブロック（\`\`\`）を最後まで出力して完結させてください。前置きや挨拶は一切不要です。`
+                        }]
+                    }
+                ];
+
+                try {
+                    await runStreamingPass(
+                        resumeContents,
+                        `ダッシュボード自動再開中 (${contPass}回目)`,
+                        contPass
+                    );
+                    // もしモデルが再開部分で ```html を再出力してしまった場合は先頭の ```html を除去してシームレスに連結
+                    const newlyAdded = accumulatedText.slice(beforeLen);
+                    const cleanedAddition = newlyAdded.replace(/^\s*```(?:html)?\r?\n?/i, '');
+                    accumulatedText = accumulatedText.slice(0, beforeLen) + cleanedAddition;
+                    console.log(`[MCP Chat] ✅ Auto-Resume Pass ${contPass} added ${cleanedAddition.length} chars (Total: ${accumulatedText.length} chars).`);
+                } catch (resumeErr) {
+                    console.warn(`[MCP Chat] ⚠️ Auto-Resume Pass ${contPass} interrupted (${resumeErr.message}). Retained ${accumulatedText.length} chars.`);
+                    if (resumeErr.message.includes('キャンセル')) throw resumeErr;
+                }
+            }
+
+            finalResponseText = accumulatedText;
+            if (totalPromptTokens > 0 || totalCandidateTokens > 0) {
+                synthesizedUsageMetadata = {
+                    promptTokenCount: totalPromptTokens,
+                    candidatesTokenCount: totalCandidateTokens,
+                    totalTokenCount: totalPromptTokens + totalCandidateTokens
+                };
+            }
+            console.log(`[MCP Chat] Streaming synthesis completed. Final text length: ${finalResponseText?.length || 0}`);
         } catch (synthErr) {
             console.error('[MCP Chat] Synthesis fallback error:', synthErr.message);
         }
@@ -686,12 +898,14 @@ ${toolDescriptions}`;
         }
     }
 
-    const usageMetadata = interaction?.usage || interaction?.usage_metadata || interaction?.usageMetadata || null;
+    const usageMetadata = synthesizedUsageMetadata || interaction?.usage || interaction?.usage_metadata || interaction?.usageMetadata || null;
 
     return {
         reply: finalResponseText,
         artifacts: artifacts,
         usageMetadata: usageMetadata,
+        model: modelName,
+        durationSeconds: Math.max(1, Math.round((Date.now() - workflowStartTime) / 1000)),
         interactionId: currentInteractionId,
         environmentId: currentEnvironmentId
     };
@@ -775,9 +989,19 @@ async function processTaskInBackground(taskId, { user, message, previous_interac
 const getMetaHandler = async (req, res) => {
     try {
         const metadata = await getMcpMetadata(req.user?.allowed_widgets || [], req.user);
+        const globalGeminiModel = await db.getSetting('GEMINI_MODEL') || 'gemini-3.8-flash';
+        const globalClaudeModel = await db.getSetting('CLAUDE_MODEL') || 'claude-sonnet-4-6';
+        const configuredMcpModel = await db.getSetting('GEMINI_MCP_CHAT_MODEL');
+        const configuredClaudeMcpModel = await db.getSetting('CLAUDE_MCP_CHAT_MODEL');
+        const aiProvider = (await db.getSetting('AI_PROVIDER')) || 'gemini';
+        const mcpAiProvider = (await db.getSetting('MCP_AI_PROVIDER')) || aiProvider;
+        const defaultMcpModel = (configuredMcpModel && llmAdapter.isClaudeModel(configuredMcpModel))
+            ? configuredMcpModel
+            : (mcpAiProvider === 'claude' ? (configuredClaudeMcpModel || globalClaudeModel) : (configuredMcpModel || globalGeminiModel));
         res.json({
             ...metadata,
-            userRole: req.user?.role || 'user'
+            userRole: req.user?.role || 'user',
+            defaultModel: defaultMcpModel
         });
     } catch (err) {
         console.error("[MCP Meta] Failed to fetch metadata:", err);

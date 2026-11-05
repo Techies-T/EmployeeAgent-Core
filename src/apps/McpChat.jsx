@@ -42,11 +42,17 @@ const ChatMessageItem = React.memo(({ msg, index, isCopied, onCopy, onReuse, onS
             const isHtmlBlock = (!inline && match && (match[1] === 'html' || match[1] === 'htm')) ||
                                 (!inline && (codeStr.startsWith('<!DOCTYPE html') || codeStr.includes('<html') || codeStr.startsWith('<div class=') || codeStr.startsWith('<div id=') || codeStr.includes('cdn.tailwindcss.com')));
             if (isHtmlBlock) {
-                return <HtmlPreviewCodeBlock code={codeStr} onSaveToKnowledge={hasKnowledgeStoreCapability ? onSaveToKnowledge : undefined} onOpen={onOpen} />;
+                return (
+                    <HtmlPreviewCodeBlock
+                        code={codeStr}
+                        onSaveToKnowledge={hasKnowledgeStoreCapability && onSaveToKnowledge ? (c) => onSaveToKnowledge(c, msg, index) : undefined}
+                        onOpen={onOpen}
+                    />
+                );
             }
             return <code className={className} {...props}>{children}</code>;
         }
-    }), [onSaveToKnowledge, hasKnowledgeStoreCapability, onOpen]);
+    }), [onSaveToKnowledge, hasKnowledgeStoreCapability, onOpen, msg, index]);
 
     return (
         <div className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -120,11 +126,11 @@ const ChatMessageItem = React.memo(({ msg, index, isCopied, onCopy, onReuse, onS
                     </div>
                 )}
                 {msg.role === 'model' && renderContextUsage(msg.usage)}
-                {msg.role === 'model' && hasKnowledgeStoreCapability && onSaveToKnowledge && (
+                {msg.role === 'model' && hasKnowledgeStoreCapability && onSaveToKnowledge && msg.text && !msg.text.trim().startsWith('❌') && (
                     <div className="mt-3 pt-2.5 border-t border-gray-100 flex items-center justify-end">
                         <button
                             type="button"
-                            onClick={() => onSaveToKnowledge(msg.text)}
+                            onClick={() => onSaveToKnowledge(msg.text, msg, index)}
                             className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-2xs"
                             title="この分析結果をナレッジベース（経営会議ブリーフィング）に登録して全社・部門Podへ事前共有します"
                         >
@@ -343,31 +349,57 @@ const McpChat = ({ onOpen, capabilities = [], initialBriefingReport = null }) =>
     const [selectedDomain, setSelectedDomain] = useState('auto'); // 'auto' | domain id
     const [isLoadingMeta, setIsLoadingMeta] = useState(false);
 
-    // Multi-LLM Model Selection (Gemini / Claude)
-    const [models, setModels] = useState([]);
-    const [claudeModels, setClaudeModels] = useState([]);
-    const [selectedModel, setSelectedModel] = useState('');
-    const [aiProvider, setAiProvider] = useState('gemini');
-    const [defaultGeminiModel, setDefaultGeminiModel] = useState('');
-    const [defaultClaudeModel, setDefaultClaudeModel] = useState('');
-    const [isGeminiConfigured, setIsGeminiConfigured] = useState(true);
-    const [isClaudeConfigured, setIsClaudeConfigured] = useState(false);
-
     // Save to Knowledge Modal State
     const [saveKnowledgeModalOpen, setSaveKnowledgeModalOpen] = useState(false);
     const [codeToSave, setCodeToSave] = useState('');
     const [saveKnowledgeDefaultTitle, setSaveKnowledgeDefaultTitle] = useState('');
+    const [saveKnowledgeContext, setSaveKnowledgeContext] = useState(null);
     const [toastMessage, setToastMessage] = useState('');
 
-    const handleSaveToKnowledge = useCallback((code) => {
-        setCodeToSave(code);
+    const handleSaveToKnowledge = useCallback((codeOrText, msgObj = null, msgIndex = null) => {
         setMessages(prev => {
-            const lastUserMsg = [...prev].reverse().find(m => m.role === 'user');
-            setSaveKnowledgeDefaultTitle(lastUserMsg ? lastUserMsg.text.slice(0, 60) : '');
+            const searchSlice = (typeof msgIndex === 'number' && msgIndex > 0)
+                ? prev.slice(0, msgIndex)
+                : prev;
+            const lastUserMsg = [...searchSlice].reverse().find(m => m.role === 'user');
+            const promptText = lastUserMsg ? lastUserMsg.text : '';
+            const fullText = msgObj?.text || codeOrText || '';
+
+            // Extract HTML code block if fullText contains ```html ... ``` or if codeOrText is already HTML
+            let htmlCode = '';
+            const trimmedInput = (codeOrText || '').trim();
+            if (
+                trimmedInput.startsWith('<!DOCTYPE html') ||
+                trimmedInput.includes('<html') ||
+                trimmedInput.startsWith('<div ') ||
+                trimmedInput.includes('cdn.tailwindcss.com')
+            ) {
+                if (!trimmedInput.includes('```html')) {
+                    htmlCode = trimmedInput;
+                }
+            }
+            if (!htmlCode && fullText) {
+                const htmlFenceMatch = fullText.match(/```(?:html|htm)\s*\n([\s\S]*?)(?:```|$)/i);
+                if (htmlFenceMatch && htmlFenceMatch[1]) {
+                    htmlCode = htmlFenceMatch[1].trim();
+                }
+            }
+
+            setCodeToSave(htmlCode || fullText);
+            setSaveKnowledgeDefaultTitle(promptText ? promptText.slice(0, 60) : '');
+            setSaveKnowledgeContext({
+                htmlCode,
+                fullText,
+                promptText,
+                modelName: msgObj?.model || metaData?.defaultModel || 'AI Agent',
+                usage: msgObj?.usage || null,
+                durationSeconds: msgObj?.durationSeconds || null,
+                artifacts: msgObj?.artifacts || []
+            });
             return prev;
         });
         setSaveKnowledgeModalOpen(true);
-    }, []);
+    }, [metaData]);
 
     const handleSavedToKnowledge = (data) => {
         setToastMessage(`「${data.title || 'ダッシュボード'}」をナレッジベースに保存しました！`);
@@ -454,25 +486,9 @@ const McpChat = ({ onOpen, capabilities = [], initialBriefingReport = null }) =>
                 if (data.mcpQuickPrompts && Array.isArray(data.mcpQuickPrompts)) {
                     setQuickPrompts(data.mcpQuickPrompts);
                 }
-                if (data.aiProvider) setAiProvider(data.aiProvider);
-                if (data.isGeminiConfigured !== undefined) setIsGeminiConfigured(data.isGeminiConfigured);
-                if (data.isClaudeConfigured !== undefined) setIsClaudeConfigured(data.isClaudeConfigured);
-                if (data.geminiMcpChatModel) setDefaultGeminiModel(data.geminiMcpChatModel);
-                if (data.claudeMcpChatModel) setDefaultClaudeModel(data.claudeMcpChatModel);
             }
         } catch (e) {
             console.error('Failed to fetch config for quick prompts:', e);
-        }
-
-        try {
-            const modelsRes = await fetch('/api/gemini/models');
-            if (modelsRes.ok) {
-                const data = await modelsRes.json();
-                if (Array.isArray(data.models)) setModels(data.models);
-                if (Array.isArray(data.claudeModels)) setClaudeModels(data.claudeModels);
-            }
-        } catch (e) {
-            console.error('Failed to fetch models for MCP chat:', e);
         }
     };
 
@@ -511,7 +527,10 @@ const McpChat = ({ onOpen, capabilities = [], initialBriefingReport = null }) =>
             id: `model-${Date.now()}`,
             role: 'model',
             text: replyText,
-            usage: res?.usageMetadata
+            usage: res?.usageMetadata,
+            model: res?.model,
+            durationSeconds: res?.durationSeconds,
+            artifacts: res?.artifacts
         }]);
 
         if (res?.artifacts && res.artifacts.length > 0) {
@@ -581,8 +600,7 @@ const McpChat = ({ onOpen, capabilities = [], initialBriefingReport = null }) =>
                     message: enrichedMessage,
                     previous_interaction_id: previousInteractionId,
                     environment_id: environmentId,
-                    pipelineDomain: selectedDomain === 'auto' ? undefined : selectedDomain,
-                    model: selectedModel || undefined
+                    pipelineDomain: selectedDomain === 'auto' ? undefined : selectedDomain
                 })
             });
 
@@ -600,7 +618,15 @@ const McpChat = ({ onOpen, capabilities = [], initialBriefingReport = null }) =>
                 // 同期フォールバック
                 setIsLoading(false);
                 if (data.reply) {
-                    setMessages(prev => [...prev, { id: `model-${Date.now()}`, role: 'model', text: data.reply, usage: data.usageMetadata }]);
+                    setMessages(prev => [...prev, {
+                        id: `model-${Date.now()}`,
+                        role: 'model',
+                        text: data.reply,
+                        usage: data.usageMetadata,
+                        model: data.model,
+                        durationSeconds: data.durationSeconds,
+                        artifacts: data.artifacts
+                    }]);
                 }
             }
 
@@ -696,47 +722,6 @@ const McpChat = ({ onOpen, capabilities = [], initialBriefingReport = null }) =>
                         )}
                     </div>
                     <div className="flex items-center gap-3">
-                        {/* Multi-LLM Model Selector */}
-                        <div className="relative min-w-0 max-w-[210px] bg-gray-50 border border-gray-200 rounded-lg p-0.5 flex items-center shadow-2xs">
-                            <select
-                                value={selectedModel}
-                                onChange={(e) => setSelectedModel(e.target.value)}
-                                className="w-full truncate bg-transparent border-none text-gray-800 text-xs font-semibold outline-none cursor-pointer appearance-none pr-5 pl-2 py-1 focus:ring-0"
-                                title="MCP実行モデルを選択 (Gemini / Claude)"
-                            >
-                                <option value="">
-                                    {aiProvider === 'claude' 
-                                        ? `🟣 Default (${defaultClaudeModel || 'Claude'})` 
-                                        : `✨ Default (${defaultGeminiModel || 'Gemini'})`}
-                                </option>
-                                {models.length > 0 && (
-                                    <optgroup label="✨ Google Gemini">
-                                        {models.map(m => {
-                                            const val = m.name.replace(/^models\//, '');
-                                            return (
-                                                <option key={`mcp-top-gem-${val}`} value={m.name}>
-                                                    ✨ {m.displayName || val}
-                                                </option>
-                                            );
-                                        })}
-                                    </optgroup>
-                                )}
-                                {claudeModels.length > 0 && (
-                                    <optgroup label="🟣 Anthropic Claude">
-                                        {claudeModels.map(m => {
-                                            const val = (m.id || m.name || '').replace(/^models\//, '');
-                                            return (
-                                                <option key={`mcp-top-claude-${val}`} value={val}>
-                                                    🟣 {m.displayName || val}
-                                                </option>
-                                            );
-                                        })}
-                                    </optgroup>
-                                )}
-                            </select>
-                            <span className="text-gray-400 text-[10px] pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">▼</span>
-                        </div>
-
                         {allArtifacts.length > 0 && !activeArtifact && (
                             <button 
                                 onClick={() => setActiveArtifact(allArtifacts[allArtifacts.length - 1])}
@@ -966,6 +951,7 @@ const McpChat = ({ onOpen, capabilities = [], initialBriefingReport = null }) =>
                 onClose={() => setSaveKnowledgeModalOpen(false)}
                 code={codeToSave}
                 defaultTitle={saveKnowledgeDefaultTitle}
+                context={saveKnowledgeContext}
                 onSaved={handleSavedToKnowledge}
             />
 

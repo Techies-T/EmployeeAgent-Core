@@ -428,53 +428,43 @@ async function autoActivate() {
             console.log('DEBUG: Initializing default RBAC policies...');
             const defaultPolicies = JSON.stringify({
                 "admin": {
-                    "name": "Admin",
+                    "label": "システム管理者 (Admin)",
+                    "description": "全ウィジェット・全MCPサーバー・ナレッジベース(全Pod)・ZTA PDPに対する完全な管理権限",
                     "allowed_widgets": ["*"],
                     "allowed_models": ["*"],
-                    "allowed_actions": ["*"]
-                },
-                "engineer": {
-                    "name": "Engineer (IT)",
-                    "allowed_widgets": ["app:mcp-chat", "app:deep-research", "app:knowledge-base", "app:gemini", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:html-editor", "app:browser", "app:virtual-office", "app:dm-chat"],
-                    "allowed_models": ["*"],
-                    "allowed_actions": ["action:use_mcp_tools"]
-                },
-                "data_analyst": {
-                    "name": "Data Analyst",
-                    "allowed_widgets": ["app:mcp-chat", "app:knowledge-base", "app:gemini", "app:html-editor", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:browser", "app:virtual-office", "app:dm-chat"],
-                    "allowed_models": ["*"],
-                    "allowed_actions": ["action:use_mcp_tools"],
-                    "allowed_pods": ["*"]
-                },
-                "researcher": {
-                    "name": "Researcher (IT)",
-                    "allowed_widgets": ["app:mcp-chat", "app:deep-research", "app:knowledge-base", "app:gemini", "app:browser", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:html-editor", "app:virtual-office", "app:dm-chat"],
-                    "allowed_models": ["*"],
-                    "allowed_actions": ["action:generate_infographic", "action:use_mcp_tools"]
+                    "allowed_actions": ["*"],
+                    "allowed_pods": ["*"],
+                    "pod_scopes": { "*": "manage" }
                 },
                 "manager": {
-                    "name": "Manager",
-                    "allowed_widgets": ["app:knowledge-base", "app:gemini", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:html-editor", "app:browser", "app:virtual-office", "app:dm-chat"],
+                    "label": "マネージャー (Manager)",
+                    "description": "部門・チーム管理者ロール。ノーマルチャット、MCPクライアント、およびナレッジベース(全Pod/所属部門Podの登録・運用)が可能",
+                    "allowed_widgets": ["app:gemini", "app:mcp-chat", "app:knowledge-base"],
                     "allowed_models": ["*"],
-                    "allowed_actions": ["action:manage_assistant_rules", "action:use_mcp_tools"]
-                },
-                "hr": {
-                    "name": "HR (Human Resources)",
-                    "allowed_widgets": ["app:knowledge-base", "app:gemini", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:html-editor", "app:browser", "app:virtual-office", "app:dm-chat"],
-                    "allowed_models": ["*"],
-                    "allowed_actions": ["action:manage_work_policy", "action:use_mcp_tools"]
+                    "allowed_actions": ["action:manage_assistant_rules", "action:use_mcp_tools", "action:publish_knowledge"],
+                    "allowed_pods": ["*", "public"],
+                    "pod_scopes": { "*": "write", "public": "write" },
+                    "widget_levels": { "gemini": "execute", "mcp-chat": "execute", "knowledge-base": "manage" }
                 },
                 "user": {
-                    "name": "General User",
-                    "allowed_widgets": ["app:knowledge-base", "app:gemini", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:html-editor", "app:browser", "app:virtual-office", "app:dm-chat"],
-                    "allowed_models": ["model:gemini-flash"],
-                    "allowed_actions": ["action:use_mcp_tools"]
+                    "label": "一般ユーザー (General_User)",
+                    "description": "標準ユーザーロール。ノーマルチャット、許可されたMCPサーバー、およびナレッジベース(公開Pod/所属部門Podへの保存・参照)が可能",
+                    "allowed_widgets": ["app:gemini", "app:mcp-chat", "app:knowledge-base"],
+                    "allowed_models": ["model:gemini-flash", "model:claude-haiku", "model:claude-sonnet"],
+                    "allowed_actions": ["action:use_mcp_tools", "action:publish_knowledge"],
+                    "allowed_pods": ["public"],
+                    "pod_scopes": { "public": "write" },
+                    "widget_levels": { "gemini": "execute", "mcp-chat": "execute", "knowledge-base": "execute" }
                 },
                 "guest": {
-                    "name": "External Guest",
-                    "allowed_widgets": ["app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:browser", "app:virtual-office", "app:dm-chat"],
-                    "allowed_models": [],
-                    "allowed_actions": []
+                    "label": "ゲスト (Guest)",
+                    "description": "外部・一時利用向けの最小権限ロール。ノーマルチャットおよび公開ナレッジベース(public Podの閲覧のみ)が利用可能",
+                    "allowed_widgets": ["app:gemini", "app:knowledge-base"],
+                    "allowed_models": ["model:gemini-flash"],
+                    "allowed_actions": [],
+                    "allowed_pods": ["public"],
+                    "pod_scopes": { "public": "read" },
+                    "widget_levels": { "gemini": "execute", "mcp-chat": "none", "knowledge-base": "read" }
                 }
             });
             await db.setSetting('RBAC_POLICIES', defaultPolicies);
@@ -483,131 +473,50 @@ async function autoActivate() {
                 const policies = JSON.parse(existingPolicies);
                 let updated = false;
 
-                // Migrate and add data_analyst role if missing
-                if (!policies.data_analyst) {
-                    policies.data_analyst = {
-                        "name": "Data Analyst",
-                        "allowed_widgets": ["app:mcp-chat", "app:knowledge-base", "app:gemini", "app:html-editor", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:browser", "app:virtual-office", "app:dm-chat"],
-                        "allowed_models": ["*"],
-                        "allowed_actions": ["action:use_mcp_tools"],
-                        "allowed_pods": ["*"]
-                    };
-                    updated = true;
-                    console.log('DEBUG: Migrated RBAC - added data_analyst role');
-                } else {
-                    if (policies.data_analyst.allowed_widgets && !policies.data_analyst.allowed_widgets.includes('*') && !policies.data_analyst.allowed_widgets.includes('app:mcp-chat')) {
-                        policies.data_analyst.allowed_widgets.unshift('app:mcp-chat');
-                        updated = true;
-                    }
-                    if (!policies.data_analyst.allowed_pods) {
-                        policies.data_analyst.allowed_pods = ["*"];
-                        updated = true;
-                        console.log('DEBUG: Migrated RBAC - added allowed_pods to data_analyst role');
-                    }
-                }
-
-                // Migrate and add engineer role if missing
-                if (!policies.engineer) {
-                    policies.engineer = {
-                        "name": "Engineer (IT)",
-                        "allowed_widgets": ["app:mcp-chat", "app:deep-research", "app:knowledge-base", "app:gemini", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:html-editor", "app:browser", "app:virtual-office", "app:dm-chat"],
-                        "allowed_models": ["*"],
-                        "allowed_actions": ["action:use_mcp_tools"]
-                    };
-                    updated = true;
-                    console.log('DEBUG: Migrated RBAC - added engineer role');
-                } else if (policies.engineer.allowed_widgets && !policies.engineer.allowed_widgets.includes('*') && !policies.engineer.allowed_widgets.includes('app:mcp-chat')) {
-                    policies.engineer.allowed_widgets.unshift('app:mcp-chat');
-                    updated = true;
-                }
-
-                // Migrate and add manager role if missing
                 if (!policies.manager) {
                     policies.manager = {
-                        "name": "Manager",
-                        "allowed_widgets": ["app:knowledge-base", "app:gemini", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:html-editor", "app:browser", "app:virtual-office", "app:dm-chat"],
+                        "label": "マネージャー (Manager)",
+                        "description": "部門・チーム管理者ロール。ノーマルチャット、MCPクライアント、およびナレッジベース(全Pod/所属部門Podの登録・運用)が可能",
+                        "allowed_widgets": ["app:gemini", "app:mcp-chat", "app:knowledge-base"],
                         "allowed_models": ["*"],
-                        "allowed_actions": ["action:manage_assistant_rules", "action:use_mcp_tools"]
+                        "allowed_actions": ["action:manage_assistant_rules", "action:use_mcp_tools", "action:publish_knowledge"],
+                        "allowed_pods": ["*", "public"],
+                        "pod_scopes": { "*": "write", "public": "write" },
+                        "widget_levels": { "gemini": "execute", "mcp-chat": "execute", "knowledge-base": "manage" }
                     };
                     updated = true;
                 }
 
-                // Migrate and add hr role if missing
-                if (!policies.hr) {
-                    policies.hr = {
-                        "name": "HR (Human Resources)",
-                        "allowed_widgets": ["app:knowledge-base", "app:gemini", "app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:html-editor", "app:browser", "app:virtual-office", "app:dm-chat"],
-                        "allowed_models": ["*"],
-                        "allowed_actions": ["action:manage_work_policy", "action:use_mcp_tools"]
+                if (!policies.user) {
+                    policies.user = {
+                        "label": "一般ユーザー (General_User)",
+                        "description": "標準ユーザーロール。ノーマルチャット、許可されたMCPサーバー、およびナレッジベース(公開Pod/所属部門Podへの保存・参照)が可能",
+                        "allowed_widgets": ["app:gemini", "app:mcp-chat", "app:knowledge-base"],
+                        "allowed_models": ["model:gemini-flash", "model:claude-haiku", "model:claude-sonnet"],
+                        "allowed_actions": ["action:use_mcp_tools", "action:publish_knowledge"],
+                        "allowed_pods": ["public"],
+                        "pod_scopes": { "public": "write" },
+                        "widget_levels": { "gemini": "execute", "mcp-chat": "execute", "knowledge-base": "execute" }
                     };
                     updated = true;
                 }
 
-                // Migrate and add guest role if missing
                 if (!policies.guest) {
                     policies.guest = {
-                        "name": "External Guest",
-                        "allowed_widgets": ["app:finder", "app:stickies", "app:notes", "app:calendar", "app:calculator", "app:browser", "app:virtual-office", "app:dm-chat"],
-                        "allowed_models": [],
-                        "allowed_actions": []
+                        "label": "ゲスト (Guest)",
+                        "description": "外部・一時利用向けの最小権限ロール。ノーマルチャットおよび公開ナレッジベース(public Podの閲覧のみ)が利用可能",
+                        "allowed_widgets": ["app:gemini", "app:knowledge-base"],
+                        "allowed_models": ["model:gemini-flash"],
+                        "allowed_actions": [],
+                        "allowed_pods": ["public"],
+                        "pod_scopes": { "public": "read" },
+                        "widget_levels": { "gemini": "execute", "mcp-chat": "none", "knowledge-base": "read" }
                     };
                     updated = true;
-                }
-                
-                ['researcher', 'engineer', 'data_analyst', 'user', 'manager', 'hr', 'guest'].forEach(roleKey => {
-                    if (policies[roleKey] && policies[roleKey].allowed_widgets) {
-                        const widgets = policies[roleKey].allowed_widgets;
-                        if (!widgets.includes('app:virtual-office')) {
-                            widgets.push('app:virtual-office');
-                            updated = true;
-                        }
-                        if (!widgets.includes('app:dm-chat')) {
-                            widgets.push('app:dm-chat');
-                            updated = true;
-                        }
-                    }
-                });
-
-                // Migrate: user, manager, hr ロールに app:gemini が欠落している場合は追加
-                ['user', 'manager', 'hr'].forEach(roleKey => {
-                    if (policies[roleKey]) {
-                        if (policies[roleKey].allowed_widgets && !policies[roleKey].allowed_widgets.includes('*') && !policies[roleKey].allowed_widgets.includes('app:gemini')) {
-                            policies[roleKey].allowed_widgets.push('app:gemini');
-                            updated = true;
-                            console.log(`DEBUG: Migrated ${roleKey} role - added app:gemini to allowed_widgets`);
-                        }
-                        if (policies[roleKey].allowed_actions && !policies[roleKey].allowed_actions.includes('*') && !policies[roleKey].allowed_actions.includes('action:use_mcp_tools')) {
-                            policies[roleKey].allowed_actions.push('action:use_mcp_tools');
-                            updated = true;
-                            console.log(`DEBUG: Migrated ${roleKey} role - added action:use_mcp_tools to allowed_actions`);
-                        }
-                    }
-                });
-
-                // Migrate: IT roles (researcher, engineer, data_analyst) ensure app:mcp-chat is added
-                ['researcher', 'engineer', 'data_analyst'].forEach(roleKey => {
-                    if (policies[roleKey] && policies[roleKey].allowed_widgets) {
-                        const widgets = policies[roleKey].allowed_widgets;
-                        if (!widgets.includes('*') && !widgets.includes('app:mcp-chat')) {
-                            widgets.unshift('app:mcp-chat');
-                            updated = true;
-                            console.log(`DEBUG: Migrated ${roleKey} role - added app:mcp-chat to allowed_widgets`);
-                        }
-                    }
-                });
-
-                // Migrate: researcher ロールに app:deep-research が欠落している場合は追加
-                if (policies.researcher && policies.researcher.allowed_widgets) {
-                    const researcherWidgets = policies.researcher.allowed_widgets;
-                    if (!researcherWidgets.includes('*') && !researcherWidgets.includes('app:deep-research')) {
-                        researcherWidgets.unshift('app:deep-research');
-                        updated = true;
-                        console.log('DEBUG: Migrated researcher role - added app:deep-research to allowed_widgets');
-                    }
                 }
 
                 if (updated) {
-                    console.log('DEBUG: Updating existing RBAC policies with manager and hr roles...');
+                    console.log('DEBUG: Updating existing RBAC policies with core base roles (admin/manager/user/guest)...');
                     await db.setSetting('RBAC_POLICIES', JSON.stringify(policies));
                 }
             } catch (err) {

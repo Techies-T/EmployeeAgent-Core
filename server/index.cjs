@@ -2514,8 +2514,8 @@ function requireAuth(req, res, next) {
                 });
             });
             
-            // Universal default widgets
-            ['app:settings', 'app:gemini', 'app:mcp-chat', 'app:calendar', 'app:notes', 'app:calculator'].forEach(w => allowed_widgets_set.add(w));
+            // Universal default widgets (only settings is universally added; other widgets follow PDP RBAC_POLICIES)
+            ['app:settings'].forEach(w => allowed_widgets_set.add(w));
             
             req.user.allowed_widgets = allowed_widgets_set.has('*') ? ['*'] : Array.from(allowed_widgets_set);
             req.user.allowed_actions = allowed_actions_set.has('*') ? ['*'] : Array.from(allowed_actions_set);
@@ -3796,7 +3796,9 @@ app.post('/api/gemini', requireAuth, async (req, res) => {
         }
 
         // ZTA: Enforce Model Access (PEP)
-        let requestedModel = config?.model || (configuredProvider === 'claude' ? globalClaudeModel : globalGeminiModel);
+        // Normal Chat ('normal', 'rag', 'search') strictly uses the Admin-configured default model from System Settings
+        const adminDefaultChatModel = configuredProvider === 'claude' ? globalClaudeModel : globalGeminiModel;
+        let requestedModel = adminDefaultChatModel;
         if (mode === 'research') {
             const defaultResModel = configuredProvider === 'claude'
                 ? (await db.getSetting('CLAUDE_RESEARCH_MODEL') || globalClaudeModel)
@@ -3830,13 +3832,11 @@ app.post('/api/gemini', requireAuth, async (req, res) => {
 
         const allowedModels = req.user.allowed_models || [];
         const cleanRequestedModel = requestedModel.replace(/^models\//, '');
-        const hasDirectModelAccess = allowedModels.includes('*') || 
-            allowedModels.includes(`model:${requestedModel}`) || 
-            allowedModels.includes(`model:${cleanRequestedModel}`) ||
-            (allowedModels.includes('model:gemini-flash') && (cleanRequestedModel.includes('flash') || requestedModel === globalGeminiModel || requestedModel === globalClaudeModel)) ||
-            (allowedModels.includes('model:claude-haiku') && cleanRequestedModel.includes('haiku')) ||
-            (allowedModels.includes('model:claude-sonnet') && (cleanRequestedModel.includes('sonnet') || requestedModel === globalClaudeModel)) ||
-            (allowedModels.includes('model:claude-opus') && cleanRequestedModel.includes('opus'));
+        const hasDirectModelAccess = llmAdapter.isModelAllowedForUser(
+            requestedModel,
+            allowedModels,
+            [globalGeminiModel, globalClaudeModel]
+        );
             
         const isAvatarCreationModel = isAvatarCreation && (
             requestedModel === globalGeminiModel || 

@@ -817,6 +817,12 @@ const SystemSettings = ({ user }) => {
             icon: '🧩',
             label: 'ウィジェット管理 & ストア'
         },
+        {
+            id: 'MCP Gateway',
+            section: 'admin',
+            icon: '🔌',
+            label: 'MCP サーバー & Gateway 管理'
+        },
         ...(hasAction('action:manage_roles') || canManageSettings ? [{
             id: 'ZTA PDP',
             section: 'admin',
@@ -1061,12 +1067,35 @@ const SystemSettings = ({ user }) => {
                     />
                 )}
 
+                {/* Category 2.5: Independent MCP Server & ZTA Gateway Management */}
+                {activeTab === 'MCP Gateway' && isSystemAdmin && (
+                    <McpConnectionsTab
+                        mcpQuickPrompts={mcpQuickPrompts}
+                        setMcpQuickPrompts={setMcpQuickPrompts}
+                        handleSaveSettings={handleSaveSettings}
+                        models={models}
+                        claudeModels={claudeModels}
+                        currentMcpChatModel={currentMcpChatModel}
+                        handleMcpChatModelChange={handleMcpChatModelChange}
+                        mcpChatSystemInstruction={mcpChatSystemInstruction}
+                        setMcpChatSystemInstruction={setMcpChatSystemInstruction}
+                        mcpChatMaxTurns={mcpChatMaxTurns}
+                        setMcpChatMaxTurns={setMcpChatMaxTurns}
+                        defaultMcpChatSystemInstruction={defaultMcpChatSystemInstruction}
+                        canManageSettings={canManageSettings}
+                        user={user}
+                        onPoliciesUpdated={(updatedRbac) => setRbacPolicies(updatedRbac)}
+                        onNavigateTab={(tabId) => setActiveTab(tabId)}
+                    />
+                )}
+
                 {/* Category 3: ZTA PDP 2-Tier Policy Matrix */}
                 {activeTab === 'ZTA PDP' && isSystemAdmin && (
                     <ZtaPolicyMatrixTab
                         installedWidgets={installedWidgets}
                         ragFolders={ragFolders}
                         onPoliciesUpdated={(updatedRbac) => setRbacPolicies(updatedRbac)}
+                        onNavigateTab={(tabId) => setActiveTab(tabId)}
                     />
                 )}
 

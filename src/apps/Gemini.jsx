@@ -608,9 +608,8 @@ const Gemini = ({ user: initialUser, capabilities = [], onOpen, initialBriefingR
                     mode: mode, 
                     grounding: useGrounding, 
                     targetRagFolderId: targetRagFolderId,
-                    systemInstruction: dynamicSystemInstruction,
-                    model: selectedChatModel || undefined
-                } // Pass selected mode, grounding flag, custom instruction, and optional model override
+                    systemInstruction: dynamicSystemInstruction
+                } // Normal Chat uses Admin-configured default model from System Settings
             };
 
             const response = await fetch('/api/gemini', {
@@ -787,47 +786,21 @@ const Gemini = ({ user: initialUser, capabilities = [], onOpen, initialBriefingR
                         </div>
 
                         {mode !== 'gemma4' && mode !== 'local_rag' && (
-                            <div className="relative min-w-0 flex-1 max-w-[220px] bg-white/15 backdrop-blur-md rounded-lg p-1 flex items-center shadow-sm border border-white/10">
+                            <div className="relative min-w-0 flex-1 max-w-[240px] bg-white/15 backdrop-blur-md rounded-lg p-1 flex items-center shadow-sm border border-white/10">
                                 <select
-                                    value={selectedChatModel}
-                                    onChange={(e) => {
-                                        setSelectedChatModel(e.target.value);
-                                        setPreviousInteractionId(null);
-                                        setEnvironmentId(null);
-                                    }}
-                                    className="w-full truncate bg-transparent border-none text-white text-xs font-medium outline-none cursor-pointer appearance-none pr-5 pl-2.5 py-1.5 focus:ring-0"
+                                    value=""
+                                    disabled
+                                    className="w-full truncate bg-transparent border-none text-white text-xs font-medium outline-none cursor-default appearance-none pr-5 pl-2.5 py-1.5 focus:ring-0"
                                     style={{ backgroundImage: 'none' }}
-                                    title="使用するAIモデルを切り替え (System Default / Gemini / Claude)"
+                                    title="管理者が System Settings で設定したデフォルトAIモデルが適用されています"
                                 >
                                     <option value="" className="text-gray-800">
-                                        {aiProvider === 'claude' ? `🟣 Default (${defaultClaudeModel || 'Claude'})` : `✨ Default (${defaultGeminiModel || 'Gemini'})`}
+                                        {aiProvider === 'claude'
+                                            ? `🟣 ${defaultClaudeModel || 'Claude'} (管理者デフォルト)`
+                                            : `✨ ${defaultGeminiModel || 'Gemini'} (管理者デフォルト)`}
                                     </option>
-                                    {geminiModels.length > 0 && (
-                                        <optgroup label="✨ Google Gemini" className="text-gray-800">
-                                            {geminiModels.map(m => {
-                                                const val = m.name.replace('models/', '');
-                                                return (
-                                                    <option key={val} value={val} className="text-gray-800">
-                                                        ✨ {m.displayName || val}
-                                                    </option>
-                                                );
-                                            })}
-                                        </optgroup>
-                                    )}
-                                    {claudeModels.length > 0 && (
-                                        <optgroup label="🟣 Anthropic Claude" className="text-gray-800">
-                                            {claudeModels.map(m => {
-                                                const val = m.name.replace('models/', '');
-                                                return (
-                                                    <option key={val} value={val} className="text-gray-800">
-                                                        🟣 {m.displayName || val}
-                                                    </option>
-                                                );
-                                            })}
-                                        </optgroup>
-                                    )}
                                 </select>
-                                <span className="text-white/80 text-[10px] pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 transform">▼</span>
+                                <span className="text-white/80 text-[10px] pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 transform">🔒</span>
                             </div>
                         )}
                     </div>

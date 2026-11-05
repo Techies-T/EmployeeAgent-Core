@@ -79,6 +79,29 @@ function normalizeGrant(g, idx = 0) {
     };
 }
 
+const CORE_ROLE_DEFAULTS = {
+    admin: {
+        label: 'システム管理者 (Admin)',
+        description: '全ウィジェット・全MCPサーバー・ナレッジベース(全Pod)・ZTA PDPに対する完全な管理権限',
+        roleCategory: 'system'
+    },
+    manager: {
+        label: 'マネージャー (Manager)',
+        description: '部門・チーム管理者ロール。ノーマルチャット、MCPクライアント、およびナレッジベース(全Pod/所属部門Podの登録・運用)が可能',
+        roleCategory: 'system'
+    },
+    user: {
+        label: '一般ユーザー (General_User)',
+        description: '標準ユーザーロール。ノーマルチャット、許可されたMCPサーバー、およびナレッジベース(公開Pod/所属部門Podへの保存・参照)が可能',
+        roleCategory: 'system'
+    },
+    guest: {
+        label: 'ゲスト (Guest)',
+        description: '外部・一時利用向けの最小権限ロール。ノーマルチャットおよび公開ナレッジベース(public Podの閲覧のみ)が利用可能',
+        roleCategory: 'system'
+    }
+};
+
 /**
  * Synthesize Universal Permission Grants from legacy/v2 fields when a role doesn't yet have explicit `grants`
  */
@@ -131,9 +154,13 @@ function synthesizeGrantsFromRole(roleKey, roleData = {}) {
     const podScopes = roleData.pod_scopes || {};
     const ragScopes = roleData.rag_folder_scopes || [];
     const sysAdmin = roleData.system_admin || {};
+    const installedFilter = Array.isArray(roleData._installedWidgetIds) && roleData._installedWidgetIds.length > 0
+        ? new Set(roleData._installedWidgetIds)
+        : null;
 
-    // 1. Widget grants
+    // 1. Widget grants (only for installed widgets if filter provided)
     for (const w of WIDGET_CATALOG) {
+        if (installedFilter && !installedFilter.has(w.id)) continue;
         const entry = matrix[w.id];
         if (!entry || !entry.level || entry.level === 'none') continue;
         const opLevel = mapWidgetLevelToOpLevel(entry.level, entry.canPublishKnowledge);
@@ -607,12 +634,13 @@ function compileRolePolicy(roleKey, roleData) {
         }
     }
 
-    const label = roleData.label || roleData.displayName || roleKey;
+    const coreDef = CORE_ROLE_DEFAULTS[roleKey] || {};
+    const label = roleData.label || roleData.displayName || coreDef.label || roleData.name || roleKey;
     return {
-        roleCategory: roleData.roleCategory || 'custom',
+        roleCategory: roleData.roleCategory || coreDef.roleCategory || 'custom',
         label,
         displayName: label,
-        description: roleData.description || '',
+        description: roleData.description || coreDef.description || '',
         grants,
         mcp_rules: mcpRules,
         allowed_widgets: Array.from(allowedWidgets),
@@ -634,20 +662,45 @@ function compileRolePolicy(roleKey, roleData) {
 /**
  * Hydrate and normalize an entire RBAC_POLICIES object
  */
-function hydrateAllPolicies(rawPolicies = {}, knownMcpIds = []) {
+function hydrateAllPolicies(rawPolicies = {}, knownMcpIds = [], installedWidgetIds = ['gemini', 'mcp-chat', 'knowledge-base']) {
     const result = {};
     const keys = Object.keys(rawPolicies);
-    if (!keys.includes('admin')) keys.unshift('admin');
-    if (!keys.includes('user')) keys.push('user');
+    for (const baseKey of ['admin', 'manager', 'user', 'guest']) {
+        if (!keys.includes(baseKey)) {
+            if (baseKey === 'admin') keys.unshift('admin');
+            else keys.push(baseKey);
+        }
+    }
 
     for (const key of keys) {
         result[key] = hydrateRolePolicy(key, {
             ...(rawPolicies[key] || {}),
-            _knownMcpIds: knownMcpIds
+            _knownMcpIds: knownMcpIds,
+            _installedWidgetIds: installedWidgetIds
         });
         delete result[key]._knownMcpIds;
+        delete result[key]._installedWidgetIds;
     }
     return result;
+}
+
+/**
+ * Filter ROLE_PRESET_TEMPLATES so templates requiring uninstalled widgets (e.g. DeepResearch)
+ * are only surfaced when those widgets are installed.
+ */
+function filterRolePresetsByInstalledWidgets(installedWidgetIds = ['gemini', 'mcp-chat', 'knowledge-base']) {
+    const installedSet = new Set(
+        (installedWidgetIds || []).map(w => (typeof w === 'string' ? w : w.id))
+    );
+    const filtered = {};
+    for (const [key, tpl] of Object.entries(ROLE_PRESET_TEMPLATES)) {
+        const reqs = Array.isArray(tpl.requiredWidgets) ? tpl.requiredWidgets : [];
+        const allInstalled = reqs.every(wId => installedSet.has(wId));
+        if (allInstalled) {
+            filtered[key] = tpl;
+        }
+    }
+    return filtered;
 }
 
 /**
@@ -657,6 +710,8 @@ const ROLE_PRESET_TEMPLATES = {
     mcp_admin: {
         roleKey: 'mcp_admin',
         roleCategory: 'mcp',
+        requiredWidgets: ['mcp-chat'],
+        tags: ['MCP', 'Admin', '管理', 'write_query', 'データベース', 'ハーネス'],
         displayName: '🔌 MCP Admin (全MCP管理・データ更新ロール)',
         description: 'すべてのMCPサーバーへの接続設定、ハーネス(YAML)更新、およびデータ更新ツール(write_query等)の実行を許可する管理者ロール',
         allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet', 'model:claude-opus'],
@@ -702,6 +757,8 @@ const ROLE_PRESET_TEMPLATES = {
     mcp_viewer: {
         roleKey: 'mcp_viewer',
         roleCategory: 'mcp',
+        requiredWidgets: ['mcp-chat'],
+        tags: ['MCP', 'ReadOnly', '参照専用', 'SELECT', 'データ分析'],
         displayName: '👁️ MCP 汎用参照ロール (Read-Only)',
         description: 'MCPサーバーを用いたデータ検索・集計・可視化(SELECT/参照系ツール)のみ許可し、DBの更新・削除(write_query, drop_table等)をブロックする参照専用ロール',
         allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet'],
@@ -747,6 +804,8 @@ const ROLE_PRESET_TEMPLATES = {
     hr_mcp_admin: {
         roleKey: 'hr_mcp_admin',
         roleCategory: 'hr_domain',
+        requiredWidgets: ['mcp-chat'],
+        tags: ['MCP', 'HR', '人事', '給与', 'Admin', 'ReadWrite'],
         displayName: '👔 人事MCP Admin (人事部用・全社人事DB更新可)',
         description: '人事部メンバー向け。全社員の人事評価・給与・配置データへのフルアクセスおよびデータ更新(Read/Write)を許可するロール',
         allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet'],
@@ -792,6 +851,8 @@ const ROLE_PRESET_TEMPLATES = {
     hr_mcp_dept_mgr: {
         roleKey: 'hr_mcp_dept_mgr',
         roleCategory: 'hr_domain',
+        requiredWidgets: ['mcp-chat'],
+        tags: ['MCP', 'HR', '人事', '部長', 'マネージャー', 'カラム制限', 'salary'],
         displayName: '📋 人事MCP 参照 (部長用・自部門スコープ & 給与カラム除外)',
         description: '事業部長・部門長向け。自部門メンバーのスキル・目標・配置データの参照のみ許可し、給与テーブル(salary/bonus)や他部門データの直接取得・DB更新を遮断するロール',
         allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet'],
@@ -828,6 +889,8 @@ const ROLE_PRESET_TEMPLATES = {
     npb_commissioner: {
         roleKey: 'npb_commissioner',
         roleCategory: 'mcp_sample',
+        requiredWidgets: ['mcp-chat'],
+        tags: ['MCP', 'NPB', 'プロ野球', 'コミッショナー', 'ReadWrite', 'write_query'],
         displayName: '⚾ NPB コミッショナー (全12球団データ更新・管理ロール)',
         description: '【検証用：人事部相当】NPB管理者用MCP(#5)を含む全NPBデータに対し、全12球団の参照およびデータ更新(write_query)を許可するフル権限ロール',
         allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet'],
@@ -873,6 +936,8 @@ const ROLE_PRESET_TEMPLATES = {
     npb_team_mgr: {
         roleKey: 'npb_team_mgr',
         roleCategory: 'mcp_sample',
+        requiredWidgets: ['mcp-chat'],
+        tags: ['MCP', 'NPB', 'プロ野球', '球団編成部長', '阪神', 'ReadOnly', 'カラム制限', 'pitching_stats'],
         displayName: '🐯 NPB 球団編成部長 (参照専用・自球団スコープ & 制限カラム検証用)',
         description: '【検証用：部長ロール相当】NPB MCP(#4/#5)に接続できるが、write_query等の更新ツールは遮断(Read-Only)され、特定テーブル/カラム(pitching_stats, salary)へのSQLアクセスもPEPでブロックされる検証ロール',
         allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet'],
@@ -922,6 +987,8 @@ const ROLE_PRESET_TEMPLATES = {
     gov_analyst: {
         roleKey: 'gov_analyst',
         roleCategory: 'mcp_sample',
+        requiredWidgets: ['mcp-chat'],
+        tags: ['MCP', 'デジタル庁', '行政', 'オープンデータ', 'ReadOnly'],
         displayName: '🏛️ デジタル庁 行政データ分析ロール (公開統計MCP専用)',
         description: '【検証用：サーバー単位の分離】デジタル庁 行政手続分析 MCP(#7)とナレッジMCP(#2)のみ利用可能で、NPBデータベース(#4, #5)へのアクセスは完全に遮断されるロール',
         allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet'],
@@ -967,6 +1034,8 @@ const ROLE_PRESET_TEMPLATES = {
     researcher_viewer: {
         roleKey: 'researcher_viewer',
         roleCategory: 'widget_task',
+        requiredWidgets: ['deep-research'],
+        tags: ['Widget', 'DeepResearch', 'ナレッジ', 'RAG', '閲覧専用'],
         displayName: '🔬 DeepResearch & ナレッジ閲覧専用ロール (実行・登録制限)',
         description: '【検証用：MCP以外のウィジェット権限】DeepResearchの過去レポート閲覧およびナレッジベースでのAI壁打ち(Read)のみ許可し、新規DeepResearch調査の実行やナレッジ登録(Write)を遮断するロール',
         allowed_models: ['model:gemini-flash', 'model:claude-haiku'],
@@ -1023,6 +1092,8 @@ const ROLE_PRESET_TEMPLATES = {
     exec_planner: {
         roleKey: 'exec_planner',
         roleCategory: 'business',
+        requiredWidgets: ['knowledge-base', 'mcp-chat'],
+        tags: ['Business', '経営企画', 'MCP', 'ナレッジ', 'RAG'],
         displayName: '📊 経営管理・営業支援 (全社分析まとめ)',
         description: 'MCPで売上見込み等を分析し、経営会議用の全社まとめレポートをナレッジ登録・管理するロール',
         allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet', 'model:claude-opus'],
@@ -1045,6 +1116,8 @@ const ROLE_PRESET_TEMPLATES = {
     domain_leader: {
         roleKey: 'domain_leader',
         roleCategory: 'business',
+        requiredWidgets: ['knowledge-base', 'mcp-chat'],
+        tags: ['Business', '事業部長', '部門長', 'MCP', 'ナレッジ'],
         displayName: '🏢 事業部長・部門長 (ドメイン深掘り分析)',
         description: '事前共有された全社まとめをRAG参照しつつ、自事業部ドメインの課題やQ2投資判断を分析・意見投稿するロール',
         allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet'],
@@ -1067,9 +1140,140 @@ const ROLE_PRESET_TEMPLATES = {
     general_member: {
         roleKey: 'general_member',
         roleCategory: 'business',
+        requiredWidgets: ['gemini'],
+        tags: ['Business', '一般社員', 'ノーマルチャット'],
         displayName: '👤 一般社員 (基本チャット & 公開ナレッジ参照)',
         description: 'ノーマルチャットでの業務対話および公開ナレッジの参照(RAG)のみ可能な標準ロール',
         allowed_models: ['model:gemini-flash', 'model:claude-haiku'],
+        v2_matrix: {
+            gemini: { level: 'execute', canPublishKnowledge: false },
+            'mcp-chat': { level: 'none', canPublishKnowledge: false },
+            'knowledge-base': { level: 'read', canPublishKnowledge: false }
+        },
+        pod_scopes: { public: 'read' },
+        mcp_scopes: [],
+        system_admin: {
+            manage_settings: false,
+            manage_roles: false,
+            manage_users: false,
+            invite_users: false,
+            manage_rag_folders: false
+        }
+    },
+    kb_pod_admin: {
+        roleKey: 'kb_pod_admin',
+        roleCategory: 'knowledge_pod',
+        requiredWidgets: ['knowledge-base'],
+        tags: ['Knowledge', 'Pod', 'ナレッジベース', 'RAG', '全社Pod管理', 'Admin'],
+        displayName: '📚 ナレッジ & 全社 Pod 管理者 (全Pod作成・承認・RAG管理)',
+        description: '全社・全部門 Pod (*) に対する管理権限 (manage) と、MCP分析結果の公式ナレッジ公開・RAGフォルダ管理を許可するロール',
+        allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet'],
+        grants: [
+            {
+                id: 'grant_kb_widget_manage',
+                resource_type: 'widget',
+                resource_id: 'knowledge-base',
+                resource_label: 'ナレッジ & RAG ブリーフィング',
+                operation_level: 'admin',
+                data_scope: 'all_company',
+                constraints: { allowed_tasks: ['publish_knowledge', 'manage_pods', 'manage_rag_folders'] }
+            },
+            {
+                id: 'grant_pod_all_admin',
+                resource_type: 'organization_pod',
+                resource_id: '*',
+                resource_label: '全組織 Pod (*)',
+                operation_level: 'admin',
+                data_scope: 'all_company',
+                constraints: {}
+            }
+        ],
+        v2_matrix: {
+            gemini: { level: 'execute', canPublishKnowledge: true },
+            'mcp-chat': { level: 'execute', canPublishKnowledge: true },
+            'knowledge-base': { level: 'manage', canPublishKnowledge: true }
+        },
+        pod_scopes: { '*': 'manage', public: 'manage' },
+        mcp_scopes: ['*'],
+        system_admin: {
+            manage_settings: false,
+            manage_roles: false,
+            manage_users: false,
+            invite_users: false,
+            manage_rag_folders: true
+        }
+    },
+    kb_pod_contributor: {
+        roleKey: 'kb_pod_contributor',
+        roleCategory: 'knowledge_pod',
+        requiredWidgets: ['knowledge-base'],
+        tags: ['Knowledge', 'Pod', 'ナレッジベース', 'MCP保存', '投稿', 'ReadWrite'],
+        displayName: '✏️ ナレッジ Pod コントリビューター (MCP分析保存・部門Pod投稿)',
+        description: 'MCPチャットや通常チャットの分析結果を公開Pod (public) および所属部門Podへナレッジ登録・議論投稿 (write) できる標準ロール',
+        allowed_models: ['model:gemini-flash', 'model:gemini-pro', 'model:claude-sonnet'],
+        grants: [
+            {
+                id: 'grant_kb_widget_exec',
+                resource_type: 'widget',
+                resource_id: 'knowledge-base',
+                resource_label: 'ナレッジ & RAG ブリーフィング',
+                operation_level: 'read_write',
+                data_scope: 'department_pod',
+                constraints: { allowed_tasks: ['publish_knowledge', 'rag_chat'] }
+            },
+            {
+                id: 'grant_pod_public_rw',
+                resource_type: 'organization_pod',
+                resource_id: 'public',
+                resource_label: '共通・パブリック Pod (public)',
+                operation_level: 'read_write',
+                data_scope: 'all_company',
+                constraints: {}
+            }
+        ],
+        v2_matrix: {
+            gemini: { level: 'execute', canPublishKnowledge: true },
+            'mcp-chat': { level: 'execute', canPublishKnowledge: true },
+            'knowledge-base': { level: 'execute', canPublishKnowledge: true }
+        },
+        pod_scopes: { public: 'write' },
+        mcp_scopes: ['*'],
+        system_admin: {
+            manage_settings: false,
+            manage_roles: false,
+            manage_users: false,
+            invite_users: false,
+            manage_rag_folders: false
+        }
+    },
+    kb_pod_viewer: {
+        roleKey: 'kb_pod_viewer',
+        roleCategory: 'knowledge_pod',
+        requiredWidgets: ['knowledge-base'],
+        tags: ['Knowledge', 'Pod', 'ナレッジベース', '閲覧専用', 'ReadOnly'],
+        displayName: '👁️ ナレッジ Pod 閲覧専用ロール (公開Pod参照のみ・保存不可)',
+        description: '公開Pod (public) に共有されたナレッジの閲覧・RAG参照のみを許可し、新規ナレッジ保存や他部門Podへのアクセスを遮断するロール',
+        allowed_models: ['model:gemini-flash', 'model:claude-haiku'],
+        grants: [
+            {
+                id: 'grant_kb_widget_ro',
+                resource_type: 'widget',
+                resource_id: 'knowledge-base',
+                resource_label: 'ナレッジ & RAG ブリーフィング',
+                operation_level: 'read_only',
+                data_scope: 'public_summary',
+                constraints: { allowed_tasks: ['rag_chat'] }
+            },
+            {
+                id: 'grant_pod_public_ro',
+                resource_type: 'organization_pod',
+                resource_id: 'public',
+                resource_label: '共通・パブリック Pod (public)',
+                operation_level: 'read_only',
+                data_scope: 'public_summary',
+                constraints: {}
+            }
+        ],
         v2_matrix: {
             gemini: { level: 'execute', canPublishKnowledge: false },
             'mcp-chat': { level: 'none', canPublishKnowledge: false },
@@ -1449,7 +1653,9 @@ function evaluatePermissionSimulation(rawPolicies, roleKeys = [], scenario = {},
 module.exports = {
     LEVEL_RANK,
     OP_LEVEL_RANK,
+    CORE_ROLE_DEFAULTS,
     ROLE_PRESET_TEMPLATES,
+    filterRolePresetsByInstalledWidgets,
     isWriteToolName,
     hydrateRolePolicy,
     compileRolePolicy,

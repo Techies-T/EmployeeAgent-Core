@@ -127,13 +127,12 @@ const WIDGET_CATALOG = [
         version: '3.0.0',
         category: 'knowledge_collab',
         iconType: 'knowledge-base',
-        defaultInstalled: false,
-        tier: 'paid_addon',
+        defaultInstalled: true,
+        tier: 'basic_included',
         pricing: {
-            model: 'monthly_per_tenant',
-            priceJpy: 30000,
-            trialDays: 14,
-            label: '¥30,000 / 月 (14日間無料トライアル可)'
+            model: 'included',
+            priceJpy: 0,
+            label: '基本パック標準搭載'
         },
         shortDescription: 'MCP分析やリサーチ結果を部門・経営会議Podで事前共有し、他メンバーがRAG参照して深掘り議論できる共有知識基盤',
         salesPitch: '【経営会議・部門横断コラボレーションの核心プラグイン】営業支援・経営管理部門がMCPで分析した「Q1売上見込みの全社まとめ」を登録し、会議前にメンバーへ共有できます。各事業部長はそのまとめをRAGとして引き継ぎ、単一ビジネスドメインの課題深掘りやQ2投資判断・AIからの客観的アドバイスを付与して会議に臨めるため、会議の生産性が飛躍的に向上します。',
@@ -511,9 +510,9 @@ const DEFAULT_INSTALLED_IDS = WIDGET_CATALOG.filter(w => w.defaultInstalled).map
 async function getInstalledPluginsMap() {
     try {
         const raw = await db.getSetting('INSTALLED_WIDGET_PLUGINS');
+        const now = new Date().toISOString();
         if (!raw) {
             const initialMap = {};
-            const now = new Date().toISOString();
             for (const id of DEFAULT_INSTALLED_IDS) {
                 initialMap[id] = {
                     installed: true,
@@ -526,12 +525,29 @@ async function getInstalledPluginsMap() {
             return initialMap;
         }
         const parsed = JSON.parse(raw);
-        return typeof parsed === 'object' && parsed !== null ? parsed : {};
+        const map = typeof parsed === 'object' && parsed !== null ? parsed : {};
+        let updated = false;
+        for (const id of DEFAULT_INSTALLED_IDS) {
+            if (!map[id]) {
+                map[id] = {
+                    installed: true,
+                    installedAt: now,
+                    licenseStatus: 'included',
+                    source: 'core_bundle'
+                };
+                updated = true;
+            }
+        }
+        if (updated) {
+            await db.setSetting('INSTALLED_WIDGET_PLUGINS', JSON.stringify(map));
+        }
+        return map;
     } catch (err) {
         console.error('[PluginManager] Failed to read INSTALLED_WIDGET_PLUGINS:', err.message);
         return {
-            gemini: { installed: true, licenseStatus: 'included' },
-            'mcp-chat': { installed: true, licenseStatus: 'included' }
+            gemini: { installed: true, licenseStatus: 'included', source: 'core_bundle' },
+            'mcp-chat': { installed: true, licenseStatus: 'included', source: 'core_bundle' },
+            'knowledge-base': { installed: true, licenseStatus: 'included', source: 'core_bundle' }
         };
     }
 }

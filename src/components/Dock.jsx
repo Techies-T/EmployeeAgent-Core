@@ -157,7 +157,7 @@ const Dock = ({ onAppClick, windows = [], user, config, customSkills = [] }) => 
     const widgetLevels = user?.widget_levels || {};
     const installedWidgetsList = Array.isArray(config?.installedWidgets) && config.installedWidgets.length > 0
         ? config.installedWidgets
-        : ['gemini', 'mcp-chat'];
+        : ['gemini', 'mcp-chat', 'knowledge-base'];
     const installedIdsSet = new Set(installedWidgetsList.map(w => typeof w === 'string' ? w : w.id));
 
     const dynamicApps = customSkills.map(skill => ({

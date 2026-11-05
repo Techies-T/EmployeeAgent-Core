@@ -73,83 +73,18 @@ const SYSTEM_GOVERNANCE_RESOURCES = [
 ];
 
 const MODEL_PERMISSION_CHOICES = [
-    { id: 'model:gemini-flash', label: '✨ Gemini Flash (高速・標準)' },
-    { id: 'model:gemini-pro', label: '✨ Gemini Pro (高精度推論)' },
-    { id: 'model:claude-sonnet', label: '🟣 Claude Sonnet 4.6 (MCP・分析推奨)' },
-    { id: 'model:claude-opus', label: '🟣 Claude Opus 4.6 (最高峰・経営分析)' },
-    { id: 'model:nano-banana', label: '🎨 Nano Banana (画像・図解生成)' }
-];
-
-const SIMULATION_SCENARIOS = [
-    {
-        id: 'npb_read',
-        label: '⚾ シナリオ1A: NPB 成績参照 (SELECT)',
-        desc: 'NPB 管理者用 MCP (#5) に対する通常の参照クエリ実行',
-        resource_type: 'mcp_server',
-        resource_id: '5',
-        action_type: 'read_query',
-        sample_query: "SELECT name, batting_avg, home_runs, rbi FROM batting_stats JOIN players USING(player_id) WHERE year = 2026 LIMIT 5;"
-    },
-    {
-        id: 'npb_write',
-        label: '🚫 シナリオ1B: NPB データ更新試行 (write_query)',
-        desc: 'NPB 管理者用 MCP (#5) で選手成績を書き換える UPDATE クエリを実行',
-        resource_type: 'mcp_server',
-        resource_id: '5',
-        action_type: 'write_query',
-        sample_query: "UPDATE batting_stats SET home_runs = 99 WHERE player_id = 101 AND year = 2026;"
-    },
-    {
-        id: 'hr_restricted_col',
-        label: '🔒 シナリオ2: 機密テーブル/給与カラム照会 (pitching_stats / salary)',
-        desc: '部長用ロール等で禁止指定されたカラム・テーブル (salary, bonus, pitching_stats) を含む SELECT クエリ',
-        resource_type: 'mcp_server',
-        resource_id: '5',
-        action_type: 'read_query',
-        sample_query: "SELECT player_id, era, salary, bonus FROM pitching_stats WHERE year = 2026;"
-    },
-    {
-        id: 'gov_mcp',
-        label: '🏛️ シナリオ3: デジタル庁 行政手続 MCP (#7) 参照',
-        desc: 'デジタル庁 行政手続分析 MCP (#7) の query_records ツール呼び出し',
-        resource_type: 'mcp_server',
-        resource_id: '7',
-        action_type: 'query_records',
-        sample_query: "dataset=procedures, life_event=引越し"
-    },
-    {
-        id: 'dr_view',
-        label: '🔬 シナリオ4A: DeepResearch 過去レポート閲覧 (Read)',
-        desc: 'DeepResearch ウィジェットを開き、過去の調査履歴レポートを閲覧',
-        resource_type: 'widget',
-        resource_id: 'deep-research',
-        action_type: 'view_history',
-        sample_query: ''
-    },
-    {
-        id: 'dr_exec',
-        label: '⚡ シナリオ4B: DeepResearch 新規調査ジョブ実行 (Execute)',
-        desc: 'DeepResearch で新しい自律調査タスク (POST /api/research) を開始',
-        resource_type: 'widget',
-        resource_id: 'deep-research',
-        action_type: 'execute',
-        sample_query: ''
-    },
-    {
-        id: 'kb_publish',
-        label: '📚 シナリオ4C: ナレッジベースへの公式記事登録 (Publish)',
-        desc: '分析レポートを公式ナレッジベースへ新規登録 (POST /api/knowledge)',
-        resource_type: 'widget',
-        resource_id: 'knowledge-base',
-        action_type: 'publish_knowledge',
-        sample_query: ''
-    }
+    { id: 'model:gemini-flash', label: '✨ Gemini Flash シリーズ (3.8 Flash 等・高速標準)' },
+    { id: 'model:gemini-pro', label: '✨ Gemini Pro / Gen-4 シリーズ (Pro / Argon / Carbon 等・高度推論)' },
+    { id: 'model:claude-sonnet', label: '🟣 Claude Sonnet / Haiku シリーズ (Sonnet 5.5 等・MCP標準分析)' },
+    { id: 'model:claude-opus', label: '🟣 Claude Opus / Fable シリーズ (Opus 5.5 / Fable 5.5 等・最高峰詳細分析)' },
+    { id: 'model:nano-banana', label: '🎨 Nano Banana / Image シリーズ (画像・図解生成)' }
 ];
 
 const ZtaPolicyMatrixTab = ({
     installedWidgets = [],
     ragFolders = [],
-    onPoliciesUpdated
+    onPoliciesUpdated,
+    onNavigateTab
 }) => {
     const [pdpPolicies, setPdpPolicies] = useState({});
     const [presets, setPresets] = useState({});
@@ -166,6 +101,15 @@ const ZtaPolicyMatrixTab = ({
     const [newRoleLabel, setNewRoleLabel] = useState('');
     const [newRoleDesc, setNewRoleDesc] = useState('');
 
+    // Preset Role Template Picker Drawer (AWS/GCP IAM-style search & category filter, hidden by default)
+    const [showPresetDrawer, setShowPresetDrawer] = useState(false);
+    const [templateSearchQuery, setTemplateSearchQuery] = useState('');
+    const [templateCategoryFilter, setTemplateCategoryFilter] = useState('all');
+
+    // Left Pane Defined Roles Search
+    const [roleSearchQuery, setRoleSearchQuery] = useState('');
+    const [serverInstalledWidgets, setServerInstalledWidgets] = useState([]);
+
     // New Permission Grant Builder state
     const [showAddGrantForm, setShowAddGrantForm] = useState(false);
     const [draftGrant, setDraftGrant] = useState({
@@ -177,11 +121,6 @@ const ZtaPolicyMatrixTab = ({
         blocked_tools: '',
         scope_prompt_guard: ''
     });
-
-    // PEP Role Permission Simulator state
-    const [simScenario, setSimScenario] = useState(SIMULATION_SCENARIOS[0]);
-    const [simResult, setSimResult] = useState(null);
-    const [simRunning, setSimRunning] = useState(false);
 
     const fetchPdpAll = async () => {
         setLoading(true);
@@ -195,6 +134,9 @@ const ZtaPolicyMatrixTab = ({
             setPdpPolicies(loadedPolicies);
             if (pdpRes.presets || pdpRes.rolePresets) {
                 setPresets(pdpRes.presets || pdpRes.rolePresets);
+            }
+            if (Array.isArray(pdpRes.installedWidgets)) {
+                setServerInstalledWidgets(pdpRes.installedWidgets);
             }
             if (Array.isArray(mcpRes) && mcpRes.length > 0) setMcpServers(mcpRes);
             else if (Array.isArray(pdpRes.mcpServers)) setMcpServers(pdpRes.mcpServers);
@@ -506,48 +448,99 @@ const ZtaPolicyMatrixTab = ({
         });
     };
 
-    const runPermissionSimulation = async (scenarioOverride = null) => {
-        const targetScenario = scenarioOverride || simScenario;
-        if (scenarioOverride) {
-            setSimScenario(scenarioOverride);
-        }
-        setSimRunning(true);
-        try {
-            const res = await fetch('/api/core/pdp/simulate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    roleKeys: [selectedRoleKey],
-                    scenario: targetScenario,
-                    draftPolicies: pdpPolicies
-                })
+    const handlePodQuickScopeChange = (podId, newScopeLevel) => {
+        if (!selectedRoleKey || selectedRoleKey === 'admin') return;
+        const currentRole = pdpPolicies[selectedRoleKey] || {};
+        const currentGrants = Array.isArray(currentRole.grants) ? [...currentRole.grants] : [];
+
+        const filteredGrants = currentGrants.filter(
+            g => !(g.resource_type === 'organization_pod' && String(g.resource_id) === String(podId))
+        );
+
+        const nextPodScopes = { ...(currentRole.pod_scopes || {}) };
+        if (newScopeLevel === 'none') {
+            delete nextPodScopes[podId];
+        } else {
+            nextPodScopes[podId] = newScopeLevel;
+            const opLevel = newScopeLevel === 'manage'
+                ? 'admin'
+                : newScopeLevel === 'write'
+                    ? 'read_write'
+                    : 'read_only';
+            filteredGrants.push({
+                id: `grant_pod_${podId}`,
+                resource_type: 'organization_pod',
+                resource_id: String(podId),
+                resource_label: resolveResourceLabel('organization_pod', podId),
+                operation_level: opLevel,
+                data_scope: podId === '*' ? 'all_company' : podId === 'public' ? 'public_summary' : 'department_pod',
+                constraints: {
+                    restricted_identifiers: [],
+                    blocked_tools: [],
+                    scope_prompt_guard: '',
+                    allowed_tasks: newScopeLevel === 'write' || newScopeLevel === 'manage' ? ['publish_knowledge'] : ['rag_chat']
+                }
             });
-            const data = await res.json();
-            setSimResult(data);
-        } catch (err) {
-            setSimResult({
-                allowed: false,
-                decision: 'ERROR',
-                reason: err.message || 'シミュレーション通信エラー'
-            });
-        } finally {
-            setSimRunning(false);
         }
+
+        const nextAllowedPods = Object.entries(nextPodScopes)
+            .filter(([, perm]) => perm && perm !== 'none')
+            .map(([id]) => id);
+
+        savePdpToServer({
+            ...pdpPolicies,
+            [selectedRoleKey]: {
+                ...currentRole,
+                pod_scopes: nextPodScopes,
+                allowed_pods: nextAllowedPods,
+                grants: filteredGrants,
+                _grantsAuthoritative: true
+            }
+        }, `Pod「${podId}」のナレッジアクセス権限を「${newScopeLevel}」に更新しました`);
     };
 
-    // Re-run simulation automatically when selectedRoleKey changes if a result is already displayed
-    useEffect(() => {
-        if (simResult && selectedRoleKey) {
-            runPermissionSimulation(simScenario);
-        }
-    }, [selectedRoleKey]);
-
-    const installedIds = (installedWidgets || []).map(w => typeof w === 'string' ? w : w.id);
-    const activeWidgetIds = installedIds.length > 0 ? installedIds : ['gemini', 'mcp-chat', 'knowledge-base', 'deep-research'];
+    const propInstalledIds = (installedWidgets || []).map(w => typeof w === 'string' ? w : w.id);
+    const apiInstalledIds = (serverInstalledWidgets || []).map(w => typeof w === 'string' ? w : w.id);
+    const activeWidgetIds = propInstalledIds.length > 0
+        ? propInstalledIds
+        : apiInstalledIds.length > 0
+            ? apiInstalledIds
+            : ['gemini', 'mcp-chat', 'knowledge-base'];
 
     const roleKeys = Object.keys(pdpPolicies);
+    const filteredRoleKeys = roleKeys.filter(rKey => {
+        if (!roleSearchQuery.trim()) return true;
+        const q = roleSearchQuery.trim().toLowerCase();
+        const rObj = pdpPolicies[rKey] || {};
+        const hay = `${rKey} ${rObj.label || ''} ${rObj.displayName || ''} ${rObj.description || ''}`.toLowerCase();
+        return hay.includes(q);
+    });
+
+    const filteredPresetEntries = Object.entries(presets).filter(([key, tpl]) => {
+        if (templateCategoryFilter !== 'all') {
+            if (templateCategoryFilter === 'mcp' && tpl.roleCategory !== 'mcp' && tpl.roleCategory !== 'mcp_sample' && !(tpl.tags || []).includes('MCP')) {
+                return false;
+            }
+            if (templateCategoryFilter === 'knowledge_pod' && tpl.roleCategory !== 'knowledge_pod' && !(tpl.tags || []).includes('Pod') && !(tpl.tags || []).includes('Knowledge')) {
+                return false;
+            }
+            if (templateCategoryFilter === 'domain' && !['hr_domain', 'mcp_sample', 'business'].includes(tpl.roleCategory)) {
+                return false;
+            }
+            if (templateCategoryFilter === 'widget' && tpl.roleCategory !== 'widget_task') {
+                return false;
+            }
+        }
+        if (!templateSearchQuery.trim()) return true;
+        const q = templateSearchQuery.trim().toLowerCase();
+        const tagStr = Array.isArray(tpl.tags) ? tpl.tags.join(' ') : '';
+        const hay = `${key} ${tpl.displayName || ''} ${tpl.description || ''} ${tpl.roleCategory || ''} ${tagStr}`.toLowerCase();
+        return hay.includes(q);
+    });
+
     const activeRole = pdpPolicies[selectedRoleKey] || {};
     const isAdminRole = selectedRoleKey === 'admin';
+    const isProtectedCoreRole = ['admin', 'user', 'guest', 'manager'].includes(selectedRoleKey);
     const activeGrants = Array.isArray(activeRole.grants) ? activeRole.grants : [];
 
     return (
@@ -569,14 +562,33 @@ const ZtaPolicyMatrixTab = ({
                             )}
                         </div>
                         <p className="text-xs text-gray-500 mt-1">
-                            従来のチェックボックス・マトリクスを廃止し、左ペインでロール（例: <strong>人事MCP Admin</strong>、<strong>人事MCP 参照・部長用</strong>、<strong>NPB 球団編成部長</strong>、<strong>DeepResearch 閲覧専用</strong>）を選択して、右ペインで<strong>「対象リソース × 操作レベル × データスコープ × カラム/ツール制約」</strong>の4軸カードをアタッチする方式に進化しました。
+                            左下の基本ロール（<strong>Admin / Manager / General_User / Guest</strong>）を選択して右下で権限ルール（対象リソース × 操作レベル × データスコープ × カラム/ツール制約）を編集するか、右上のボタンから<strong>プリセット検索</strong>または<strong>新規カスタムロール作成</strong>を行えます。
                         </p>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-2 shrink-0 flex-wrap">
                         <button
                             type="button"
-                            onClick={() => setShowNewRoleModal(!showNewRoleModal)}
+                            onClick={() => {
+                                setShowPresetDrawer(!showPresetDrawer);
+                                if (!showPresetDrawer) setShowNewRoleModal(false);
+                            }}
+                            className={`px-3.5 py-2 rounded-lg text-xs font-bold border shadow-xs cursor-pointer transition flex items-center gap-1.5 ${
+                                showPresetDrawer
+                                    ? 'bg-slate-800 text-white border-slate-900'
+                                    : 'bg-white hover:bg-slate-50 text-slate-700 border-gray-300'
+                            }`}
+                        >
+                            <span>🔍</span>
+                            <span>プリセット・テンプレートから追加 ({Object.keys(presets).length})</span>
+                            <span className="text-[10px]">{showPresetDrawer ? '▲' : '▼'}</span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setShowNewRoleModal(!showNewRoleModal);
+                                if (!showNewRoleModal) setShowPresetDrawer(false);
+                            }}
                             className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer transition"
                         >
                             ＋ 新規カスタムロール作成
@@ -605,7 +617,7 @@ const ZtaPolicyMatrixTab = ({
                                     type="text"
                                     value={newRoleKey}
                                     onChange={(e) => setNewRoleKey(e.target.value)}
-                                    placeholder="例: hr_payroll_auditor"
+                                    placeholder="例: npb_team_director"
                                     className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs font-mono bg-white"
                                 />
                             </div>
@@ -615,7 +627,7 @@ const ZtaPolicyMatrixTab = ({
                                     type="text"
                                     value={newRoleLabel}
                                     onChange={(e) => setNewRoleLabel(e.target.value)}
-                                    placeholder="例: 給与監査ロール (人事部)"
+                                    placeholder="例: 球団編成部長"
                                     className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs bg-white"
                                 />
                             </div>
@@ -625,7 +637,7 @@ const ZtaPolicyMatrixTab = ({
                                     type="text"
                                     value={newRoleDesc}
                                     onChange={(e) => setNewRoleDesc(e.target.value)}
-                                    placeholder="例: 人事DBの給与テーブル参照のみ許可"
+                                    placeholder="例: NPBデータの参照のみ許可（投手査定・年俸カラムは除外）"
                                     className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs bg-white"
                                 />
                             </div>
@@ -643,37 +655,139 @@ const ZtaPolicyMatrixTab = ({
                     </div>
                 )}
 
-                {/* Quick 1-Click Role Preset Templates Bar */}
-                <div className="mt-4 pt-3 border-t border-gray-100">
-                    <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-bold text-gray-700">
-                            ⚡ 1クリック・ロールテンプレート追加 (MCP Admin / 人事部 vs 部長 / NPB・デジ庁検証 / DeepResearch閲覧専用):
-                        </span>
+                {/* Collapsible AWS / GCP IAM-Style Preset Role Template Catalog */}
+                {showPresetDrawer && (
+                    <div className="mt-4 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            <div>
+                                <h3 className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
+                                    <span>⚡ プリセット・権限テンプレートカタログ (AWS / GCP IAM 方式フィルタ)</span>
+                                    <span className="px-2 py-0.5 text-[10px] rounded-full bg-indigo-100 text-indigo-800 font-semibold">
+                                        インストール済みウィジェット連動 ({activeWidgetIds.join(', ')})
+                                    </span>
+                                </h3>
+                                <p className="text-[11px] text-gray-500 mt-0.5">
+                                    キーワード（例: <code className="px-1 py-0.5 bg-white border rounded">MCP</code>, <code className="px-1 py-0.5 bg-white border rounded">NPB</code>, <code className="px-1 py-0.5 bg-white border rounded">球団編成部長</code>, <code className="px-1 py-0.5 bg-white border rounded">人事</code>）で検索し、必要なときだけ左下の定義済みロール一覧へ追加できます。※未インストールのウィジェット専用テンプレート（DeepResearch等）は自動的に非表示になります。
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowPresetDrawer(false)}
+                                className="text-xs text-gray-500 hover:text-gray-800 shrink-0 cursor-pointer"
+                            >
+                                ✕ カタログを隠す
+                            </button>
+                        </div>
+
+                        {/* Search Bar + Category Filter Pills */}
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 pt-1">
+                            <div className="relative flex-1">
+                                <input
+                                    type="text"
+                                    value={templateSearchQuery}
+                                    onChange={(e) => setTemplateSearchQuery(e.target.value)}
+                                    placeholder="🔍 プリセットを検索 (例: MCP, NPB, 球団編成部長, 人事, Read-Only, デジタル庁...)"
+                                    className="w-full pl-3 pr-8 py-1.5 bg-white border border-gray-300 rounded-lg text-xs focus:outline-none focus:border-indigo-500"
+                                />
+                                {templateSearchQuery && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setTemplateSearchQuery('')}
+                                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400 hover:text-gray-700 cursor-pointer"
+                                    >
+                                        ✕
+                                    </button>
+                                )}
+                            </div>
+
+                            <div className="flex items-center gap-1 flex-wrap">
+                                {[
+                                    { id: 'all', label: 'すべて' },
+                                    { id: 'mcp', label: '🔌 MCP サーバー権限' },
+                                    { id: 'knowledge_pod', label: '📚 ナレッジ & Pod 権限' },
+                                    { id: 'domain', label: '🏢 部門・業務検証 (人事 / NPB / 行政)' },
+                                    ...(activeWidgetIds.includes('deep-research')
+                                        ? [{ id: 'widget', label: '🧩 DeepResearch・ウィジェット' }]
+                                        : [])
+                                ].map(tab => (
+                                    <button
+                                        key={tab.id}
+                                        type="button"
+                                        onClick={() => setTemplateCategoryFilter(tab.id)}
+                                        className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer transition border ${
+                                            templateCategoryFilter === tab.id
+                                                ? 'bg-indigo-600 text-white border-indigo-600'
+                                                : 'bg-white hover:bg-gray-100 text-gray-700 border-gray-300'
+                                        }`}
+                                    >
+                                        {tab.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Filtered Preset Template List */}
+                        {filteredPresetEntries.length === 0 ? (
+                            <div className="p-6 text-center bg-white rounded-lg border border-gray-200 text-xs text-gray-400">
+                                条件に一致するプリセット・テンプレートが見つかりません。検索ワードを変更してください。
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-72 overflow-y-auto pr-1">
+                                {filteredPresetEntries.map(([key, tpl]) => {
+                                    const alreadyExists = Boolean(pdpPolicies[key]);
+                                    return (
+                                        <div
+                                            key={key}
+                                            className={`p-3 rounded-lg border bg-white flex flex-col justify-between gap-2 transition ${
+                                                selectedRoleKey === key
+                                                    ? 'border-indigo-500 ring-1 ring-indigo-500'
+                                                    : 'border-gray-200 hover:border-indigo-300'
+                                            }`}
+                                        >
+                                            <div>
+                                                <div className="flex items-start justify-between gap-2">
+                                                    <div className="font-bold text-xs text-gray-900">
+                                                        {tpl.displayName || key}
+                                                    </div>
+                                                    <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-slate-100 text-slate-600 shrink-0">
+                                                        {key}
+                                                    </span>
+                                                </div>
+                                                <p className="text-[11px] text-gray-500 mt-1 line-clamp-2">
+                                                    {tpl.description}
+                                                </p>
+                                            </div>
+                                            <div className="flex items-center justify-between gap-2 pt-1 border-t border-gray-100">
+                                                <div className="flex flex-wrap gap-1">
+                                                    {(tpl.tags || []).slice(0, 4).map(tag => (
+                                                        <span
+                                                            key={tag}
+                                                            onClick={() => setTemplateSearchQuery(tag)}
+                                                            className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-indigo-50 text-indigo-700 cursor-pointer hover:bg-indigo-100"
+                                                        >
+                                                            #{tag}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleApplyRolePreset(key)}
+                                                    className={`px-2.5 py-1 rounded text-[11px] font-bold cursor-pointer transition shrink-0 ${
+                                                        alreadyExists
+                                                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
+                                                            : 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                                                    }`}
+                                                >
+                                                    {alreadyExists ? '✓ 追加済み (再適用)' : '＋ このロールを追加'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
-                        {Object.entries(presets).map(([key, tpl]) => {
-                            const alreadyExists = Boolean(pdpPolicies[key]);
-                            return (
-                                <button
-                                    key={key}
-                                    type="button"
-                                    onClick={() => handleApplyRolePreset(key)}
-                                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border cursor-pointer transition flex items-center gap-1 ${
-                                        selectedRoleKey === key
-                                            ? 'bg-indigo-600 text-white border-indigo-700 shadow-xs'
-                                            : alreadyExists
-                                                ? 'bg-indigo-50/70 hover:bg-indigo-100 text-indigo-900 border-indigo-200'
-                                                : 'bg-white hover:bg-slate-50 text-gray-700 border-gray-300'
-                                    }`}
-                                    title={tpl.description}
-                                >
-                                    <span>{alreadyExists ? '✓' : '＋'}</span>
-                                    <span>{tpl.displayName || key}</span>
-                                </button>
-                            );
-                        })}
-                    </div>
-                </div>
+                )}
             </div>
 
             {loading ? (
@@ -685,20 +799,30 @@ const ZtaPolicyMatrixTab = ({
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
                     {/* LEFT PANE: Role List (4 cols on lg) */}
                     <div className="lg:col-span-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-                        <div className="px-4 py-3 bg-slate-50 border-b border-gray-200 flex items-center justify-between">
-                            <h3 className="font-bold text-xs text-gray-800">
-                                📋 定義済みロール一覧 ({roleKeys.length})
-                            </h3>
-                            <span className="text-[10px] text-gray-500">クリックして権限を編集</span>
+                        <div className="px-4 py-3 bg-slate-50 border-b border-gray-200 space-y-2">
+                            <div className="flex items-center justify-between">
+                                <h3 className="font-bold text-xs text-gray-800">
+                                    📋 定義済みロール一覧 ({filteredRoleKeys.length} / {roleKeys.length})
+                                </h3>
+                                <span className="text-[10px] text-gray-500">クリックして権限を編集</span>
+                            </div>
+                            <input
+                                type="text"
+                                value={roleSearchQuery}
+                                onChange={(e) => setRoleSearchQuery(e.target.value)}
+                                placeholder="🔍 定義済みロールをフィルタ..."
+                                className="w-full px-2.5 py-1 bg-white border border-gray-200 rounded-md text-[11px] focus:outline-none focus:border-indigo-400"
+                            />
                         </div>
                         <div className="divide-y divide-gray-100 max-h-[680px] overflow-y-auto">
-                            {roleKeys.map(rKey => {
+                            {filteredRoleKeys.map(rKey => {
                                 const rObj = pdpPolicies[rKey] || {};
                                 const isSelected = rKey === selectedRoleKey;
                                 const grantsCount = Array.isArray(rObj.grants) ? rObj.grants.length : 0;
                                 const mcpCount = (rObj.mcp_scopes || []).includes('*')
                                     ? '全MCP(*)'
                                     : `${(rObj.mcp_scopes || []).length} MCP`;
+                                const isCore = ['admin', 'manager', 'user', 'guest'].includes(rKey);
 
                                 return (
                                     <div
@@ -712,8 +836,13 @@ const ZtaPolicyMatrixTab = ({
                                     >
                                         <div className="flex items-start justify-between gap-2">
                                             <div className="min-w-0">
-                                                <div className="font-bold text-xs text-gray-900 truncate">
-                                                    {rObj.label || rObj.displayName || rKey}
+                                                <div className="font-bold text-xs text-gray-900 truncate flex items-center gap-1.5">
+                                                    <span>{rObj.label || rObj.displayName || rKey}</span>
+                                                    {isCore && (
+                                                        <span className="px-1.5 py-0.2 text-[9px] font-semibold rounded bg-slate-100 text-slate-600 border border-slate-200">
+                                                            基本
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <div className="text-[10px] font-mono text-gray-400 mt-0.5">
                                                     ID: {rKey}
@@ -723,7 +852,7 @@ const ZtaPolicyMatrixTab = ({
                                                 <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-white border border-gray-200 text-gray-600">
                                                     {grantsCount} ルール
                                                 </span>
-                                                {rKey !== 'admin' && rKey !== 'user' && (
+                                                {!isCore && (
                                                     <button
                                                         type="button"
                                                         onClick={(e) => {
@@ -746,6 +875,13 @@ const ZtaPolicyMatrixTab = ({
                                         <div className="mt-2 flex flex-wrap gap-1">
                                             <span className="px-1.5 py-0.5 text-[10px] rounded bg-indigo-50 text-indigo-700 font-medium">
                                                 🔌 {mcpCount}
+                                            </span>
+                                            <span className="px-1.5 py-0.5 text-[10px] rounded bg-emerald-50 text-emerald-700 font-medium">
+                                                🏢 Pod: {(rObj.allowed_pods || []).includes('*')
+                                                    ? '全Pod(*)'
+                                                    : (rObj.allowed_pods || []).length > 0
+                                                        ? (rObj.allowed_pods || []).join(', ')
+                                                        : '所属Podのみ'}
                                             </span>
                                             {Object.entries(rObj.mcp_rules || {}).map(([sId, rule]) => (
                                                 <span
@@ -817,7 +953,7 @@ const ZtaPolicyMatrixTab = ({
                                                     const nextType = e.target.value;
                                                     let defaultId = '*';
                                                     if (nextType === 'mcp_server' && mcpServers.length > 0) defaultId = String(mcpServers[0].id);
-                                                    if (nextType === 'widget') defaultId = 'deep-research';
+                                                    if (nextType === 'widget') defaultId = activeWidgetIds[0] || 'gemini';
                                                     if (nextType === 'organization_pod' && pods.length > 0) defaultId = String(pods[0].id);
                                                     if (nextType === 'system_governance') defaultId = 'manage_settings';
                                                     setDraftGrant({ ...draftGrant, resource_type: nextType, resource_id: defaultId });
@@ -856,11 +992,14 @@ const ZtaPolicyMatrixTab = ({
                                                     className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-xs bg-white font-semibold"
                                                 >
                                                     <option value="*">🧩 全 AI ウィジェット (*)</option>
-                                                    {Object.entries(WIDGET_META).map(([wId, meta]) => (
-                                                        <option key={wId} value={wId}>
-                                                            {meta.icon} {meta.name} ({wId})
-                                                        </option>
-                                                    ))}
+                                                    {activeWidgetIds.map((wId) => {
+                                                        const meta = WIDGET_META[wId] || { name: wId, icon: '🧩' };
+                                                        return (
+                                                            <option key={wId} value={wId}>
+                                                                {meta.icon} {meta.name} ({wId})
+                                                            </option>
+                                                        );
+                                                    })}
                                                 </select>
                                             )}
                                             {draftGrant.resource_type === 'organization_pod' && (
@@ -1193,144 +1332,92 @@ const ZtaPolicyMatrixTab = ({
                                     </div>
                                 </div>
                             </div>
+
+                            {/* Quick Knowledge Base Pod Access Scopes */}
+                            <div className="mt-4 p-3.5 rounded-xl bg-emerald-50/40 border border-emerald-200">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2.5">
+                                    <h4 className="font-bold text-xs text-emerald-950 flex items-center gap-1.5">
+                                        <span>🏢 ナレッジベース Pod アクセス権限 (Pod 単位の閲覧・MCP保存・管理スコープ)</span>
+                                        <span className="px-2 py-0.5 text-[10px] rounded-full bg-emerald-100 text-emerald-800 font-semibold">
+                                            knowledge-base 連動
+                                        </span>
+                                    </h4>
+                                    <span className="text-[10px] text-emerald-700">
+                                        MCP分析結果のナレッジ保存先・RAG参照可能なPodスコープをロール単位で制御します
+                                    </span>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    {[
+                                        { id: 'public', name: '🌐 共通・パブリック Pod (public)', desc: '全社公開ナレッジ・共有ブリーフィング' },
+                                        { id: '*', name: '🏢 全社・全部門 Pod (*)', desc: 'すべての部門Podに対する横断アクセス権限' },
+                                        ...(pods || [])
+                                            .filter(p => p.id !== 'public' && p.id !== '*')
+                                            .map(p => ({
+                                                id: String(p.id),
+                                                name: `📦 ${p.name} (${p.id})`,
+                                                desc: p.description || '部門・プロジェクト専用 Pod'
+                                            }))
+                                    ].map(podItem => {
+                                        const rawScope = isAdminRole
+                                            ? 'manage'
+                                            : (activeRole.pod_scopes?.[podItem.id] ||
+                                                ((activeRole.allowed_pods || []).includes(podItem.id) ? 'read' : 'none'));
+                                        return (
+                                            <div
+                                                key={podItem.id}
+                                                className="flex items-center justify-between gap-2 bg-white px-3 py-2 rounded-lg border border-emerald-200/80 text-xs shadow-2xs"
+                                            >
+                                                <div className="min-w-0">
+                                                    <div className="font-bold text-gray-800 truncate">{podItem.name}</div>
+                                                    <div className="text-[10px] text-gray-400 truncate">{podItem.desc}</div>
+                                                </div>
+                                                <select
+                                                    disabled={isAdminRole}
+                                                    value={rawScope}
+                                                    onChange={(e) => handlePodQuickScopeChange(podItem.id, e.target.value)}
+                                                    className={`px-2 py-1 rounded border text-[11px] font-bold cursor-pointer shrink-0 ${
+                                                        rawScope === 'manage'
+                                                            ? 'bg-purple-50 text-purple-800 border-purple-300'
+                                                            : rawScope === 'write'
+                                                                ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                                                                : rawScope === 'read'
+                                                                    ? 'bg-sky-50 text-sky-800 border-sky-300'
+                                                                    : 'bg-gray-50 text-gray-500 border-gray-200'
+                                                    }`}
+                                                >
+                                                    <option value="none">🚫 アクセス不可 (none)</option>
+                                                    <option value="read">👁️ 閲覧・RAG参照のみ (read)</option>
+                                                    <option value="write">✏️ MCP保存・投稿可 (write)</option>
+                                                    <option value="manage">🛠️ Pod管理・承認 (manage)</option>
+                                                </select>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
                         </div>
 
-                        {/* Section 3: 1-Click PEP Role Permission Simulator */}
-                        <div className="bg-slate-900 text-white rounded-xl border border-slate-700 shadow-md p-5 space-y-4">
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-700">
+                        {/* Compact Link Card to MCP-ZTA-Gateway Simulator */}
+                        <div className="bg-indigo-50/70 rounded-xl border border-indigo-200/80 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex items-start gap-2.5">
+                                <span className="text-base mt-0.5">🔌</span>
                                 <div>
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-lg">🧪</span>
-                                        <h3 className="font-bold text-sm text-white">
-                                            ZTA ロール権限シミュレーター (1クリック PEP Dry-Run 検証パネル)
-                                        </h3>
-                                        <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded bg-indigo-500/30 text-indigo-200 border border-indigo-400/40">
-                                            テスト対象ロール: {activeRole.label || selectedRoleKey} ({selectedRoleKey})
-                                        </span>
-                                    </div>
-                                    <p className="text-[11px] text-slate-300 mt-1">
-                                        別アカウントでログインし直さなくても、現在選択中のロール「<strong>{activeRole.label || selectedRoleKey}</strong>」で NPB・デジタル庁 MCP・人事機密カラム・DeepResearch を操作した際に ZTA PEP がどう判定するか即座にテストできます。
+                                    <h4 className="font-bold text-xs text-indigo-950">
+                                        MCP-ZTA-Gateway の SQL / ツール権限シミュレーター (PEP Dry-Run)
+                                    </h4>
+                                    <p className="text-[11px] text-indigo-800/80 mt-0.5">
+                                        MCP サーバーに対するロール別アクセス検証（Read-Only 検査・禁止テーブル/給与カラム遮断・スコープ制約）は、独立した「<strong>🔌 MCP サーバー & Gateway 管理</strong>」タブへ統合されました。
                                     </p>
                                 </div>
                             </div>
-
-                            {/* Preset Test Scenario Buttons */}
-                            <div className="space-y-1.5">
-                                <span className="text-[11px] font-bold text-slate-300">
-                                    ⚡ 検証シナリオを選択して1クリック実行:
-                                </span>
-                                <div className="flex flex-wrap gap-1.5">
-                                    {SIMULATION_SCENARIOS.map(sc => (
-                                        <button
-                                            key={sc.id}
-                                            type="button"
-                                            onClick={() => runPermissionSimulation(sc)}
-                                            className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer transition border ${
-                                                simScenario.id === sc.id
-                                                    ? 'bg-indigo-600 text-white border-indigo-400 shadow-xs'
-                                                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-600'
-                                            }`}
-                                        >
-                                            {sc.label}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {/* Custom / Editable Scenario Inputs */}
-                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 bg-slate-800/90 p-3 rounded-xl border border-slate-700 text-xs">
-                                <div>
-                                    <label className="block text-[10px] text-slate-400 mb-1">リソース種別</label>
-                                    <select
-                                        value={simScenario.resource_type}
-                                        onChange={(e) => setSimScenario({ ...simScenario, id: 'custom', resource_type: e.target.value })}
-                                        className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-600 text-white text-xs"
-                                    >
-                                        <option value="mcp_server">🔌 mcp_server</option>
-                                        <option value="widget">🧩 widget</option>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className="block text-[10px] text-slate-400 mb-1">対象サーバーID / ウィジェットID</label>
-                                    <input
-                                        type="text"
-                                        value={simScenario.resource_id}
-                                        onChange={(e) => setSimScenario({ ...simScenario, id: 'custom', resource_id: e.target.value })}
-                                        placeholder="例: 5 または deep-research"
-                                        className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-600 text-white font-mono text-xs"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-[10px] text-slate-400 mb-1">実行ツール / アクション名</label>
-                                    <input
-                                        type="text"
-                                        value={simScenario.action_type}
-                                        onChange={(e) => setSimScenario({ ...simScenario, id: 'custom', action_type: e.target.value })}
-                                        placeholder="例: read_query / write_query / execute"
-                                        className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-600 text-white font-mono text-xs"
-                                    />
-                                </div>
-                                <div className="flex items-end">
-                                    <button
-                                        type="button"
-                                        onClick={() => runPermissionSimulation()}
-                                        disabled={simRunning}
-                                        className="w-full py-1.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs cursor-pointer transition"
-                                    >
-                                        {simRunning ? '判定中...' : '▶ PEP 判定テスト実行'}
-                                    </button>
-                                </div>
-                                {simScenario.resource_type === 'mcp_server' && (
-                                    <div className="sm:col-span-4">
-                                        <label className="block text-[10px] text-slate-400 mb-1">
-                                            テスト実行 SQL / 引数ペイロード (restricted_identifiers や UPDATE/DROP 検査対象)
-                                        </label>
-                                        <input
-                                            type="text"
-                                            value={simScenario.sample_query}
-                                            onChange={(e) => setSimScenario({ ...simScenario, id: 'custom', sample_query: e.target.value })}
-                                            placeholder="SELECT * FROM batting_stats ..."
-                                            className="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-slate-600 text-amber-200 font-mono text-xs"
-                                        />
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Simulation Output Result Box */}
-                            {simResult && (
-                                <div
-                                    className={`p-4 rounded-xl border ${
-                                        simResult.allowed
-                                            ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-100'
-                                            : 'bg-rose-950/80 border-rose-500/60 text-rose-100'
-                                    }`}
+                            {onNavigateTab && (
+                                <button
+                                    type="button"
+                                    onClick={() => onNavigateTab('MCP Gateway')}
+                                    className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold whitespace-nowrap cursor-pointer transition shadow-xs"
                                 >
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div className="flex items-center gap-2">
-                                            <span className={`px-2.5 py-0.5 rounded text-xs font-extrabold ${
-                                                simResult.allowed ? 'bg-emerald-500 text-slate-950' : 'bg-rose-500 text-white'
-                                            }`}>
-                                                {simResult.allowed ? '✅ PERMIT (実行許可)' : '🚫 DENY (ZTA PEP ブロック)'}
-                                            </span>
-                                            <span className="text-xs font-mono text-slate-300">
-                                                判定ステージ: {simResult.stage}
-                                            </span>
-                                        </div>
-                                        {simResult.grant && (
-                                            <span className="text-[11px] font-mono text-slate-300">
-                                                op={simResult.grant.operation_level} | scope={simResult.grant.data_scope}
-                                            </span>
-                                        )}
-                                    </div>
-                                    <p className="text-xs mt-2 font-medium leading-relaxed">
-                                        {simResult.reason}
-                                    </p>
-                                    {simResult.grant?.scope_prompt_guard && (
-                                        <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-amber-200">
-                                            🛡️ <strong>自動注入されるAIスコープガード:</strong> {simResult.grant.scope_prompt_guard}
-                                        </div>
-                                    )}
-                                </div>
+                                    🔌 MCP Gateway 管理を開く →
+                                </button>
                             )}
                         </div>
                     </div>

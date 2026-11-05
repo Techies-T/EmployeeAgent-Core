@@ -302,15 +302,18 @@ router.get('/pdp', async (req, res) => {
         });
         const ragFolders = JSON.parse((await db.getSetting('GOOGLE_DRIVE_RAG_FOLDERS')) || '[]');
         const catalogData = await pluginManager.getFullPluginCatalog();
+        const installedWidgetIds = (catalogData.installedWidgets || []).map(w => typeof w === 'string' ? w : w.id);
 
         const knownMcpIds = mcpServers.map(s => s.id);
-        const hydratedPolicies = ztaPdpService.hydrateAllPolicies(rawPolicies, knownMcpIds);
+        const hydratedPolicies = ztaPdpService.hydrateAllPolicies(rawPolicies, knownMcpIds, installedWidgetIds);
+        const activePresets = ztaPdpService.filterRolePresetsByInstalledWidgets(installedWidgetIds);
 
         res.json({
             pdp: hydratedPolicies,
             policies: hydratedPolicies,
-            presets: ztaPdpService.ROLE_PRESET_TEMPLATES,
-            rolePresets: ztaPdpService.ROLE_PRESET_TEMPLATES,
+            presets: activePresets,
+            rolePresets: activePresets,
+            allPresets: ztaPdpService.ROLE_PRESET_TEMPLATES,
             installedWidgets: catalogData.installedWidgets,
             allWidgets: catalogData.widgets,
             mcpServers,
@@ -336,6 +339,8 @@ router.post('/pdp', async (req, res) => {
             });
         });
         const knownMcpIds = mcpServers.map(s => s.id);
+        const catalogData = await pluginManager.getFullPluginCatalog();
+        const installedWidgetIds = (catalogData.installedWidgets || []).map(w => typeof w === 'string' ? w : w.id);
 
         let targetPolicies = req.body.policies || req.body.pdp;
 
@@ -346,7 +351,7 @@ router.post('/pdp', async (req, res) => {
                 return res.status(400).json({ error: `未定義のロールプリセットです: ${presetKey}` });
             }
             const currentRaw = JSON.parse((await db.getSetting('RBAC_POLICIES')) || '{}');
-            const hydratedCurrent = ztaPdpService.hydrateAllPolicies(currentRaw, knownMcpIds);
+            const hydratedCurrent = ztaPdpService.hydrateAllPolicies(currentRaw, knownMcpIds, installedWidgetIds);
             targetPolicies = {
                 ...hydratedCurrent,
                 [presetKey]: {
@@ -368,9 +373,11 @@ router.post('/pdp', async (req, res) => {
             compiledPolicies[roleKey] = ztaPdpService.compileRolePolicy(roleKey, {
                 ...roleData,
                 _grantsAuthoritative: Boolean(roleData._grantsAuthoritative),
-                _knownMcpIds: knownMcpIds
+                _knownMcpIds: knownMcpIds,
+                _installedWidgetIds: installedWidgetIds
             });
             delete compiledPolicies[roleKey]._knownMcpIds;
+            delete compiledPolicies[roleKey]._installedWidgetIds;
             delete compiledPolicies[roleKey]._grantsAuthoritative;
         }
 

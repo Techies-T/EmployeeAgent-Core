@@ -11,6 +11,45 @@ const DOMAIN_KEY_OPTIONS = [
     { value: 'general', label: '🔌 汎用 MCP ツール (general)' }
 ];
 
+const MCP_GATEWAY_SIMULATION_SCENARIOS = [
+    {
+        id: 'npb_read',
+        label: '⚾ シナリオ1A: NPB 成績参照 (SELECT)',
+        desc: 'NPB 管理者用 MCP (#5) に対する通常の参照クエリ実行',
+        resource_type: 'mcp_server',
+        resource_id: '5',
+        action_type: 'read_query',
+        sample_query: "SELECT name, batting_avg, home_runs, rbi FROM batting_stats JOIN players USING(player_id) WHERE year = 2026 LIMIT 5;"
+    },
+    {
+        id: 'npb_write',
+        label: '🚫 シナリオ1B: NPB データ更新試行 (write_query)',
+        desc: 'NPB 管理者用 MCP (#5) で選手成績を書き換える UPDATE クエリを実行',
+        resource_type: 'mcp_server',
+        resource_id: '5',
+        action_type: 'write_query',
+        sample_query: "UPDATE batting_stats SET home_runs = 99 WHERE player_id = 101 AND year = 2026;"
+    },
+    {
+        id: 'hr_restricted_col',
+        label: '🔒 シナリオ2: 機密テーブル/給与カラム照会 (pitching_stats / salary)',
+        desc: '球団編成部長や人事部長ロール等で禁止指定されたカラム・テーブル (salary, bonus, pitching_stats) を含む SELECT クエリ',
+        resource_type: 'mcp_server',
+        resource_id: '5',
+        action_type: 'read_query',
+        sample_query: "SELECT player_id, era, salary, bonus FROM pitching_stats WHERE year = 2026;"
+    },
+    {
+        id: 'gov_mcp',
+        label: '🏛️ シナリオ3: デジタル庁 行政手続 MCP (#7) 参照',
+        desc: 'デジタル庁 行政手続分析 MCP (#7) の query_records ツール呼び出し',
+        resource_type: 'mcp_server',
+        resource_id: '7',
+        action_type: 'query_records',
+        sample_query: "dataset=procedures, life_event=引越し"
+    }
+];
+
 const McpConnectionsTab = ({ 
     mcpQuickPrompts = [], 
     setMcpQuickPrompts, 
@@ -25,11 +64,22 @@ const McpConnectionsTab = ({
     setMcpChatMaxTurns,
     defaultMcpChatSystemInstruction = '',
     canManageSettings = true,
-    user
+    user,
+    onPoliciesUpdated,
+    onNavigateTab
 }) => {
-    const [activeSubTab, setActiveSubTab] = useState('connections'); // 'connections' | 'prompts' | 'model' | 'harness'
+    const [activeSubTab, setActiveSubTab] = useState('connections'); // 'connections' | 'gateway_sim' | 'prompts' | 'model' | 'harness'
     const [servers, setServers] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
+
+    // MCP-ZTA-Gateway Role Policy & PEP Dry-Run Simulator State
+    const [pdpPolicies, setPdpPolicies] = useState({});
+    const [mcpPresets, setMcpPresets] = useState({});
+    const [simSelectedRoleKey, setSimSelectedRoleKey] = useState('admin');
+    const [simScenario, setSimScenario] = useState(MCP_GATEWAY_SIMULATION_SCENARIOS[0]);
+    const [simResult, setSimResult] = useState(null);
+    const [simRunning, setSimRunning] = useState(false);
+    const [presetNotice, setPresetNotice] = useState('');
     
     // Modal State
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -91,9 +141,88 @@ const McpConnectionsTab = ({
         }
     };
 
+    const fetchMcpPdpPolicies = async () => {
+        try {
+            const res = await fetch('/api/core/pdp');
+            if (res.ok) {
+                const data = await res.json();
+                const loadedPdp = data.pdp || data.policies || {};
+                setPdpPolicies(loadedPdp);
+                const rawPresets = data.presets || data.rolePresets || {};
+                const onlyMcpPresets = Object.fromEntries(
+                    Object.entries(rawPresets).filter(([, tpl]) =>
+                        tpl.roleCategory === 'mcp' ||
+                        tpl.roleCategory === 'mcp_sample' ||
+                        tpl.roleCategory === 'hr_domain' ||
+                        (Array.isArray(tpl.tags) && tpl.tags.includes('MCP'))
+                    )
+                );
+                setMcpPresets(onlyMcpPresets);
+                const roleKeys = Object.keys(loadedPdp);
+                if (roleKeys.length > 0 && !loadedPdp[simSelectedRoleKey]) {
+                    setSimSelectedRoleKey(roleKeys.includes('user') ? 'user' : roleKeys[0]);
+                }
+            }
+        } catch (e) {
+            console.error('Failed to fetch MCP PDP policies:', e);
+        }
+    };
+
+    const handleActivateMcpRolePreset = async (presetKey) => {
+        if (!presetKey) return;
+        try {
+            const res = await fetch('/api/core/pdp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ applyPresetKey: presetKey })
+            });
+            const data = await res.json();
+            if (res.ok && data.pdp) {
+                setPdpPolicies(data.pdp);
+                setSimSelectedRoleKey(presetKey);
+                if (onPoliciesUpdated && data.rbacPolicies) {
+                    onPoliciesUpdated(data.rbacPolicies);
+                }
+                setPresetNotice(`✅ MCP ロール「${mcpPresets[presetKey]?.displayName || presetKey}」を追加し、テスト対象に選択しました`);
+                setTimeout(() => setPresetNotice(''), 4000);
+            }
+        } catch (e) {
+            console.error('Failed to activate MCP role preset:', e);
+        }
+    };
+
+    const runGatewaySimulation = async (scenarioOverride = null, roleOverride = null) => {
+        const targetScenario = scenarioOverride || simScenario;
+        const targetRole = roleOverride || simSelectedRoleKey;
+        if (scenarioOverride) setSimScenario(scenarioOverride);
+        setSimRunning(true);
+        try {
+            const res = await fetch('/api/core/pdp/simulate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    roleKeys: [targetRole],
+                    scenario: targetScenario,
+                    draftPolicies: pdpPolicies
+                })
+            });
+            const data = await res.json();
+            setSimResult(data);
+        } catch (err) {
+            setSimResult({
+                allowed: false,
+                decision: 'ERROR',
+                reason: err.message || 'MCP-ZTA-Gateway シミュレーション通信エラー'
+            });
+        } finally {
+            setSimRunning(false);
+        }
+    };
+
     useEffect(() => {
         fetchServers();
         fetchHarnessYaml();
+        fetchMcpPdpPolicies();
     }, []);
 
     const handleSaveHarnessYaml = async () => {
@@ -315,33 +444,361 @@ const McpConnectionsTab = ({
     return (
         <div className="space-y-6">
             {/* Sub Tab Navigation */}
-            <div className="flex border-b border-gray-200">
+            <div className="flex flex-wrap border-b border-gray-200 gap-1">
                 <button
                     onClick={() => setActiveSubTab('connections')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeSubTab === 'connections' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                    className={`px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${activeSubTab === 'connections' ? 'border-indigo-600 text-indigo-600 bg-indigo-50/40 rounded-t-lg' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
                 >
-                    Server Connections
+                    <span>🔌</span>
+                    <span>サーバー接続 & Gateway ルーティング</span>
                 </button>
                 <button
-                    onClick={() => setActiveSubTab('prompts')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeSubTab === 'prompts' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                    onClick={() => {
+                        setActiveSubTab('gateway_sim');
+                        fetchMcpPdpPolicies();
+                    }}
+                    className={`px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${activeSubTab === 'gateway_sim' ? 'border-indigo-600 text-indigo-600 bg-indigo-50/40 rounded-t-lg' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
                 >
-                    Quick Prompts
-                </button>
-                <button
-                    onClick={() => setActiveSubTab('model')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeSubTab === 'model' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
-                >
-                    MCP Chat Model
+                    <span>🧪</span>
+                    <span>ZTA Gateway ロール権限 & シミュレーター</span>
                 </button>
                 <button
                     onClick={() => setActiveSubTab('harness')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-1.5 ${activeSubTab === 'harness' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                    className={`px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${activeSubTab === 'harness' ? 'border-indigo-600 text-indigo-600 bg-indigo-50/40 rounded-t-lg' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
                 >
                     <span>🛡️</span>
-                    <span>Harness & Rules (YAML Hot-Reload)</span>
+                    <span>ハーネス & ルール (YAML Hot-Reload)</span>
+                </button>
+                <button
+                    onClick={() => setActiveSubTab('prompts')}
+                    className={`px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${activeSubTab === 'prompts' ? 'border-indigo-600 text-indigo-600 bg-indigo-50/40 rounded-t-lg' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+                >
+                    <span>⚡</span>
+                    <span>クイックプロンプト</span>
+                </button>
+                <button
+                    onClick={() => setActiveSubTab('model')}
+                    className={`px-4 py-2.5 text-xs font-bold border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${activeSubTab === 'model' ? 'border-indigo-600 text-indigo-600 bg-indigo-50/40 rounded-t-lg' : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'}`}
+                >
+                    <span>🤖</span>
+                    <span>MCP チャット AI モデル</span>
                 </button>
             </div>
+
+            {/* Sub-Tab: ZTA Gateway Role Permissions & PEP Dry-Run Simulator */}
+            {activeSubTab === 'gateway_sim' && (() => {
+                const currentRoleObj = pdpPolicies[simSelectedRoleKey] || {};
+                const roleMcpGrants = (Array.isArray(currentRoleObj.grants) ? currentRoleObj.grants : []).filter(
+                    g => g.resource_type === 'mcp_server'
+                );
+
+                return (
+                    <div className="space-y-5 animate-fadeIn">
+                        {/* Overview Card: Role Selection & MCP Server Grants */}
+                        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-4">
+                            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-gray-100">
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-lg">🛡️</span>
+                                        <h2 className="font-bold text-sm text-gray-900">
+                                            MCP-ZTA-Gateway ロール別アクセスルール & PEP シミュレーター
+                                        </h2>
+                                        <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                            OAuth A2A / SQL & Tool 実行前インターセプト検証
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                        MCP チャットが MCP-ZTA-Gateway 経由で外部データベース（NPB 統計 DB・人事 DB・デジタル庁 MCP 等）へクエリを発行する際、各ロールの操作レベル（Read-Only / Read-Write）、禁止カラム（<code>salary</code>, <code>pitching_stats</code> 等）、AI スコープ制約がどう動作するかをリアルタイムに検証できます。
+                                    </p>
+                                </div>
+                                {onNavigateTab && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onNavigateTab('ZTA PDP')}
+                                        className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold whitespace-nowrap cursor-pointer transition border border-slate-300"
+                                    >
+                                        🛡️ ロール & 権限ビルダーで編集 →
+                                    </button>
+                                )}
+                            </div>
+
+                            {presetNotice && (
+                                <div className="px-3.5 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold">
+                                    {presetNotice}
+                                </div>
+                            )}
+
+                            {/* Role Selector & Quick MCP Preset Activator */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                <div className="p-3.5 rounded-xl bg-slate-50 border border-gray-200 space-y-2">
+                                    <label className="block text-xs font-bold text-gray-800">
+                                        ① 検証対象の定義済みロールを選択 ({Object.keys(pdpPolicies).length} ロール)
+                                    </label>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {Object.entries(pdpPolicies).map(([rKey, rVal]) => {
+                                            const active = rKey === simSelectedRoleKey;
+                                            return (
+                                                <button
+                                                    key={rKey}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setSimSelectedRoleKey(rKey);
+                                                        if (simResult) {
+                                                            runGatewaySimulation(simScenario, rKey);
+                                                        }
+                                                    }}
+                                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition border ${
+                                                        active
+                                                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                                                            : 'bg-white hover:bg-gray-100 text-gray-700 border-gray-200'
+                                                    }`}
+                                                >
+                                                    {rVal.label || rVal.displayName || rKey}
+                                                    <span className={`ml-1 text-[10px] font-mono ${active ? 'text-indigo-200' : 'text-gray-400'}`}>
+                                                        ({rKey})
+                                                    </span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <div className="p-3.5 rounded-xl bg-indigo-50/40 border border-indigo-100 space-y-2">
+                                    <label className="block text-xs font-bold text-indigo-950">
+                                        ⚡ MCP 専用プリセットロールをワンクリック有効化してテスト
+                                    </label>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {Object.entries(mcpPresets).map(([pKey, pTpl]) => {
+                                            const isInstalledRole = Boolean(pdpPolicies[pKey]);
+                                            return (
+                                                <button
+                                                    key={pKey}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        if (isInstalledRole) {
+                                                            setSimSelectedRoleKey(pKey);
+                                                            if (simResult) runGatewaySimulation(simScenario, pKey);
+                                                        } else {
+                                                            handleActivateMcpRolePreset(pKey);
+                                                        }
+                                                    }}
+                                                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer transition border ${
+                                                        isInstalledRole
+                                                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                                                            : 'bg-white text-indigo-700 border-indigo-200 hover:bg-indigo-50'
+                                                    }`}
+                                                >
+                                                    {isInstalledRole ? '✓ ' : '＋ '}
+                                                    {pTpl.displayName || pKey}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Active Role's MCP Server Permission Grants Summary */}
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <h3 className="text-xs font-bold text-gray-800">
+                                        🔌 選択中ロール「{currentRoleObj.label || simSelectedRoleKey} ({simSelectedRoleKey})」の MCP-ZTA-Gateway 権限ルール ({roleMcpGrants.length} 件)
+                                    </h3>
+                                </div>
+                                {roleMcpGrants.length === 0 ? (
+                                    <div className="p-3 rounded-lg bg-rose-50/60 border border-rose-200 text-rose-800 text-xs">
+                                        🚫 このロールには <code>mcp_server</code> 権限ルールがアタッチされていません。すべての MCP サーバー呼び出しが Zero-Trust 原則（Default Deny）によりブロックされます。
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                        {roleMcpGrants.map((g, idx) => {
+                                            const restricted = g.constraints?.restricted_identifiers || [];
+                                            const guardText = g.constraints?.scope_prompt_guard || '';
+                                            return (
+                                                <div
+                                                    key={g.id || idx}
+                                                    className="p-3 rounded-xl bg-slate-50 border border-gray-200 text-xs space-y-1.5"
+                                                >
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <span className="font-bold text-gray-900">
+                                                            🔌 {g.resource_label || `MCP Server (${g.resource_id})`}
+                                                        </span>
+                                                        <div className="flex items-center gap-1">
+                                                            <span className="px-2 py-0.5 rounded font-mono text-[10px] font-bold bg-indigo-100 text-indigo-800">
+                                                                op: {g.operation_level}
+                                                            </span>
+                                                            <span className="px-2 py-0.5 rounded font-mono text-[10px] font-bold bg-amber-100 text-amber-800">
+                                                                scope: {g.data_scope}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-600 flex flex-wrap gap-2">
+                                                        <span>
+                                                            🔒 禁止テーブル/カラム:{' '}
+                                                            {restricted.length > 0 ? (
+                                                                <code className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">
+                                                                    {restricted.join(', ')}
+                                                                </code>
+                                                            ) : (
+                                                                <span className="text-gray-400">なし</span>
+                                                            )}
+                                                        </span>
+                                                    </div>
+                                                    {guardText && (
+                                                        <div className="text-[11px] text-amber-900 bg-amber-50/80 border border-amber-200/80 rounded px-2 py-1">
+                                                            🛡️ <strong>AIスコープ制約:</strong> {guardText}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Dark Simulator Panel */}
+                        <div className="bg-slate-900 text-white rounded-xl border border-slate-700 shadow-md p-5 space-y-4">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-700">
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-lg">🧪</span>
+                                        <h3 className="font-bold text-sm text-white">
+                                            MCP-ZTA-Gateway ロール権限シミュレーター (1クリック PEP Dry-Run 検証パネル)
+                                        </h3>
+                                        <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded bg-indigo-500/30 text-indigo-200 border border-indigo-400/40">
+                                            テスト対象ロール: {currentRoleObj.label || simSelectedRoleKey} ({simSelectedRoleKey})
+                                        </span>
+                                    </div>
+                                    <p className="text-[11px] text-slate-300 mt-1">
+                                        別アカウントでログインし直さなくても、選択中のロール「<strong>{currentRoleObj.label || simSelectedRoleKey}</strong>」で NPB 統計 DB・人事機密カラム・デジタル庁 MCP を操作した際に MCP-ZTA-Gateway PEP がどう判定するか即座にテストできます。
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Preset Test Scenario Buttons */}
+                            <div className="space-y-1.5">
+                                <span className="text-[11px] font-bold text-slate-300">
+                                    ⚡ MCP 検証シナリオを選択して1クリック実行:
+                                </span>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {MCP_GATEWAY_SIMULATION_SCENARIOS.map(sc => (
+                                        <button
+                                            key={sc.id}
+                                            type="button"
+                                            onClick={() => runGatewaySimulation(sc)}
+                                            className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold cursor-pointer transition border ${
+                                                simScenario.id === sc.id
+                                                    ? 'bg-indigo-600 text-white border-indigo-400 shadow-xs'
+                                                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-600'
+                                            }`}
+                                        >
+                                            {sc.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Custom / Editable Scenario Inputs */}
+                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 bg-slate-800/90 p-3 rounded-xl border border-slate-700 text-xs">
+                                <div>
+                                    <label className="block text-[10px] text-slate-400 mb-1">対象リソース種別</label>
+                                    <input
+                                        type="text"
+                                        readOnly
+                                        value="🔌 mcp_server (MCP Gateway)"
+                                        className="w-full px-2 py-1.5 rounded bg-slate-900/70 border border-slate-700 text-slate-300 text-xs"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-[10px] text-slate-400 mb-1">対象 MCP サーバー</label>
+                                    <select
+                                        value={simScenario.resource_id}
+                                        onChange={(e) => setSimScenario({ ...simScenario, id: 'custom', resource_type: 'mcp_server', resource_id: e.target.value })}
+                                        className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-600 text-white text-xs"
+                                    >
+                                        <option value="5">[#5] NPB 統計データ分析 MCP</option>
+                                        <option value="7">[#7] デジタル庁 行政手続 MCP</option>
+                                        {servers.filter(s => String(s.id) !== '5' && String(s.id) !== '7').map(s => (
+                                            <option key={s.id} value={String(s.id)}>
+                                                [#{s.id}] {s.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-[10px] text-slate-400 mb-1">実行 MCP ツール名</label>
+                                    <input
+                                        type="text"
+                                        value={simScenario.action_type}
+                                        onChange={(e) => setSimScenario({ ...simScenario, id: 'custom', resource_type: 'mcp_server', action_type: e.target.value })}
+                                        placeholder="例: read_query / write_query / query_records"
+                                        className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-600 text-white font-mono text-xs"
+                                    />
+                                </div>
+                                <div className="flex items-end">
+                                    <button
+                                        type="button"
+                                        onClick={() => runGatewaySimulation()}
+                                        disabled={simRunning}
+                                        className="w-full py-1.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs cursor-pointer transition"
+                                    >
+                                        {simRunning ? '判定中...' : '▶ PEP 判定テスト実行'}
+                                    </button>
+                                </div>
+                                <div className="sm:col-span-4">
+                                    <label className="block text-[10px] text-slate-400 mb-1">
+                                        テスト実行 SQL / ツール引数ペイロード (restricted_identifiers や UPDATE/DROP 検査対象)
+                                    </label>
+                                    <input
+                                        type="text"
+                                        value={simScenario.sample_query}
+                                        onChange={(e) => setSimScenario({ ...simScenario, id: 'custom', resource_type: 'mcp_server', sample_query: e.target.value })}
+                                        placeholder="SELECT * FROM batting_stats ..."
+                                        className="w-full px-2.5 py-1.5 rounded bg-slate-900 border border-slate-600 text-amber-200 font-mono text-xs"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Simulation Output Result Box */}
+                            {simResult && (
+                                <div
+                                    className={`p-4 rounded-xl border ${
+                                        simResult.allowed
+                                            ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-100'
+                                            : 'bg-rose-950/80 border-rose-500/60 text-rose-100'
+                                    }`}
+                                >
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-2">
+                                            <span className={`px-2.5 py-0.5 rounded text-xs font-extrabold ${
+                                                simResult.allowed ? 'bg-emerald-500 text-slate-950' : 'bg-rose-500 text-white'
+                                            }`}>
+                                                {simResult.allowed ? '✅ PERMIT (Gateway 通過・実行許可)' : '🚫 DENY (MCP-ZTA-Gateway ブロック)'}
+                                            </span>
+                                            <span className="text-xs font-mono text-slate-300">
+                                                判定ステージ: {simResult.stage}
+                                            </span>
+                                        </div>
+                                        {simResult.grant && (
+                                            <span className="text-[11px] font-mono text-slate-300">
+                                                op={simResult.grant.operation_level} | scope={simResult.grant.data_scope}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="text-xs mt-2 font-medium leading-relaxed">
+                                        {simResult.reason}
+                                    </p>
+                                    {simResult.grant?.scope_prompt_guard && (
+                                        <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-amber-200">
+                                            🛡️ <strong>MCP チャットへ自動注入されるAIスコープガード:</strong> {simResult.grant.scope_prompt_guard}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            })()}
 
             {activeSubTab === 'prompts' && (
             <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 animate-fadeIn">

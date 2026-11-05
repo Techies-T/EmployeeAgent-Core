@@ -24,6 +24,8 @@ function anthropicHttpsRequest(urlPath, { method = 'GET', headers = {}, body = n
 
         const req = https.request({
             hostname: 'api.anthropic.com',
+            servername: 'api.anthropic.com',
+            family: 4,
             port: 443,
             path: urlPath,
             method,
@@ -64,8 +66,8 @@ function anthropicHttpsRequest(urlPath, { method = 'GET', headers = {}, body = n
             bodySent = true;
             try {
                 req.flushHeaders();
-                await new Promise(r => setTimeout(r, 10));
-                const CHUNK_SIZE = 800; // utun MTU 1000 未満に収まる安全な TLS レコードサイズ
+                await new Promise(r => setTimeout(r, 25));
+                const CHUNK_SIZE = 512; // utun MTU 1000 未満に確実に収まる安全な TLS レコードサイズ
                 for (let offset = 0; offset < bodyBuf.length; offset += CHUNK_SIZE) {
                     if (req.destroyed) return;
                     const slice = bodyBuf.subarray(offset, offset + CHUNK_SIZE);
@@ -74,7 +76,7 @@ function anthropicHttpsRequest(urlPath, { method = 'GET', headers = {}, body = n
                         await new Promise(r => req.once('drain', r));
                     }
                     if (offset + CHUNK_SIZE < bodyBuf.length) {
-                        await new Promise(r => setTimeout(r, 8));
+                        await new Promise(r => setTimeout(r, 10));
                     }
                 }
                 if (!req.destroyed) {
@@ -154,12 +156,77 @@ const INITIAL_CLAUDE_MODELS = [
 const claudeConversations = new Map();
 
 /**
- * 指定されたモデル名が Claude モデルかどうかを判定
+ * 指定されたモデル名が Claude (Anthropic) モデルかどうかを判定
+ * 次世代モデル系列 (claude-fable-*, fable-* 等) も含めて判定
  */
 function isClaudeModel(modelName) {
     if (!modelName || typeof modelName !== 'string') return false;
     const clean = modelName.replace(/^models\//, '').trim().toLowerCase();
-    return clean.startsWith('claude-');
+    return clean.startsWith('claude-') || clean.startsWith('fable-');
+}
+
+/**
+ * ZTA PDP (allowed_models) に基づき、ユーザーが指定モデルを利用可能か動的判定する共通ヘルパー
+ * 特定バージョン文字列のハードコードを避け、ファミリー/ティア単位 (Flash, Pro/Argon/Carbon, Sonnet/Haiku, Opus/Fable) で評価する
+ */
+function isModelAllowedForUser(requestedModel, allowedModels = [], systemDefaultModels = []) {
+    if (!requestedModel || typeof requestedModel !== 'string') return true;
+    if (!Array.isArray(allowedModels) || allowedModels.length === 0) return false;
+    if (allowedModels.includes('*')) return true;
+
+    const clean = requestedModel.replace(/^models\//, '').trim().toLowerCase();
+    const cleanDefaults = systemDefaultModels
+        .filter(Boolean)
+        .map(m => String(m).replace(/^models\//, '').trim().toLowerCase());
+
+    // 直接指定 (model:<id>) の一致
+    if (allowedModels.includes(`model:${requestedModel}`) || allowedModels.includes(`model:${clean}`)) {
+        return true;
+    }
+
+    // システム標準デフォルトモデル (Adminが設定した GEMINI_MODEL / GEMINI_MCP_CHAT_MODEL 等) は基本ロール権限で許可
+    if (cleanDefaults.includes(clean) && (allowedModels.includes('model:gemini-flash') || allowedModels.includes('model:claude-sonnet'))) {
+        return true;
+    }
+
+    // 1. Gemini Flash / 軽量系 (3.8 Flash, 4 Flash, Gemma 等)
+    if (allowedModels.includes('model:gemini-flash') && (clean.includes('flash') || clean.includes('gemma'))) {
+        return true;
+    }
+    // 2. Gemini Pro / 次世代上位推論系 (Pro, Gemini 4 Argon, Gemini 4 Carbon, Ultra 等)
+    if (allowedModels.includes('model:gemini-pro') && (
+        clean.includes('pro') ||
+        clean.includes('argon') ||
+        clean.includes('carbon') ||
+        clean.includes('ultra')
+    )) {
+        return true;
+    }
+    // 3. Claude Haiku / 軽量系
+    if (allowedModels.includes('model:claude-haiku') && clean.includes('haiku')) {
+        return true;
+    }
+    // 4. Claude Sonnet / 標準分析系
+    if (allowedModels.includes('model:claude-sonnet') && (clean.includes('sonnet') || clean.includes('haiku'))) {
+        return true;
+    }
+    // 5. Claude Opus / Fable 次世代フラッグシップ系 (Opus 5.5, Fable 5.5 等)
+    if ((allowedModels.includes('model:claude-opus') || allowedModels.includes('model:claude-fable')) && (
+        clean.includes('opus') ||
+        clean.includes('fable')
+    )) {
+        return true;
+    }
+    // 6. 画像・図解生成系 (Nano Banana / Imagen / Flash Image)
+    if (allowedModels.includes('model:nano-banana') && (
+        clean.includes('image') ||
+        clean.includes('imagen') ||
+        clean.includes('banana')
+    )) {
+        return true;
+    }
+
+    return false;
 }
 
 /**
@@ -253,7 +320,7 @@ async function listClaudeModels(apiKey, db) {
         }
 
         const formatted = apiModels
-            .filter(m => m && m.id && m.id.startsWith('claude-'))
+            .filter(m => m && m.id && isClaudeModel(m.id))
             .map(m => ({
                 name: m.id,
                 displayName: m.display_name ? `${m.display_name} (${m.id})` : m.id,
@@ -315,7 +382,8 @@ async function callAnthropicMessages(apiKey, payload, betaHeaders = []) {
     }
 
     const doFetch = async (bodyObj) => {
-        for (let attempt = 1; attempt <= 2; attempt++) {
+        const MAX_ATTEMPTS = 4;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             try {
                 return await anthropicHttpsRequest('/v1/messages', {
                     method: 'POST',
@@ -323,9 +391,9 @@ async function callAnthropicMessages(apiKey, payload, betaHeaders = []) {
                     body: JSON.stringify(bodyObj)
                 });
             } catch (netErr) {
-                if (attempt < 2) {
-                    console.warn(`[Anthropic API] Network transient error (${netErr.message}), retrying (attempt ${attempt + 1}/2)...`);
-                    await new Promise(r => setTimeout(r, 800));
+                if (attempt < MAX_ATTEMPTS) {
+                    console.warn(`[Anthropic API] Network transient error (${netErr.message}), retrying (attempt ${attempt + 1}/${MAX_ATTEMPTS})...`);
+                    await new Promise(r => setTimeout(r, attempt * 1200));
                 } else {
                     throw netErr;
                 }
@@ -957,9 +1025,62 @@ async function runClaudeMcpWorkflow({
             maxTokens: 16384
         });
         finalResponseText = synthRes.text;
-        if (synthRes.usageMetadata) {
+        if ( synthRes.usageMetadata ) {
             totalInputTokens += synthRes.usageMetadata.promptTokenCount;
             totalOutputTokens += synthRes.usageMetadata.candidatesTokenCount;
+        }
+    }
+
+    // HTML ダッシュボードが max_tokens (16,384) 上限で途中切断された場合の自動継続生成 (Auto-Continuation)
+    if (finalResponseText && typeof finalResponseText === 'string') {
+        const lastHtmlIdx = finalResponseText.lastIndexOf('```html');
+        if (lastHtmlIdx !== -1) {
+            const afterHtml = finalResponseText.substring(lastHtmlIdx + 7);
+            const isHtmlUnclosed = !afterHtml.includes('</html>') || !afterHtml.includes('```');
+            if (isHtmlUnclosed) {
+                console.warn(`[MCP Chat Claude] ⚠️ Detected truncated HTML block at ${finalResponseText.length} chars. Requesting auto-continuation from Claude (${targetModel})...`);
+                if (onProgress) {
+                    onProgress('大容量ダッシュボードの残りのスクリプト・グラフ描画コードを継続生成中...', turnCount + 1);
+                }
+                try {
+                    const tailContext = finalResponseText.slice(-1500);
+                    const contPayload = {
+                        model: targetModel,
+                        max_tokens: 16384,
+                        temperature: 0.1,
+                        system: 'あなたはHTML/JavaScriptダッシュボードの継続出力エンジンです。直前の出力がトークン上限で途中切断されました。前置きや挨拶、```html の再宣言は一切行わず、切断された直後の文字から正確に続けて出力し、</script></body></html>``` および分析サマリーまで完全に閉じてください。',
+                        messages: [
+                            {
+                                role: 'user',
+                                content: message
+                            },
+                            {
+                                role: 'assistant',
+                                content: finalResponseText
+                            },
+                            {
+                                role: 'user',
+                                content: `直前の出力が以下の末尾で途中切断されています:\n\n---\n${tailContext}\n---\n\nこの末尾の直後から（重複させずに）続きのJavaScript/HTMLコードのみを出力し、Chart.jsの初期化と</script></body></html>\`\`\`まで確実に完結させてください。`
+                            }
+                        ]
+                    };
+                    const contRes = await callAnthropicMessages(apiKey, contPayload);
+                    if (contRes.usage) {
+                        const cu = normalizeClaudeUsage(contRes.usage);
+                        totalInputTokens += cu.promptTokenCount;
+                        totalOutputTokens += cu.candidatesTokenCount;
+                    }
+                    let contText = extractTextFromClaudeContent(contRes.content);
+                    if (contText) {
+                        // 万が一冒頭に ```javascript や ```html が付いていた場合は除去してシームレスに結合
+                        contText = contText.replace(/^```(?:html|javascript|js)?\s*\n?/i, '');
+                        finalResponseText += contText;
+                        console.log(`[MCP Chat Claude] ✅ Auto-continuation succeeded. Total length: ${finalResponseText.length} chars.`);
+                    }
+                } catch (contErr) {
+                    console.error('[MCP Chat Claude] Auto-continuation failed:', contErr.message);
+                }
+            }
         }
     }
 
@@ -1023,6 +1144,7 @@ async function countClaudeTokens({ apiKey, model, content }) {
 module.exports = {
     INITIAL_CLAUDE_MODELS,
     isClaudeModel,
+    isModelAllowedForUser,
     cleanModelId,
     resolveActiveConfig,
     listClaudeModels,

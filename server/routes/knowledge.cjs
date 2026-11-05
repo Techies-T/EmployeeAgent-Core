@@ -121,6 +121,37 @@ router.get('/', async (req, res) => {
     });
 });
 
+// POST: HTMLダッシュボードやレポートをEA内部サイト (/reports/:id.html) としてパブリッシュ
+router.post('/publish', async (req, res) => {
+    try {
+        const { title, content, mimeType } = req.body;
+        if (!content) {
+            return res.status(400).json({ error: 'Content is required to publish' });
+        }
+
+        const crypto = require('crypto');
+        const id = crypto.randomUUID();
+        const safeMimeType = mimeType || 'text/html';
+        const safeTitle = title || 'Untitled Report';
+
+        await new Promise((resolve, reject) => {
+            db.run(
+                "INSERT INTO published_reports (id, title, content, mime_type) VALUES (?, ?, ?, ?)",
+                [id, safeTitle, content, safeMimeType],
+                (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                }
+            );
+        });
+
+        res.json({ success: true, id });
+    } catch (error) {
+        console.error("[Knowledge Publish Error]:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // GET: 単一記事の詳細取得
 router.get('/:id', async (req, res) => {
     const allowedPods = await getAllowedPodsForUser(req.user);
