@@ -53,8 +53,16 @@ ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${STAGING_USER}@${STAGING_HOST}
   # Tag image for docker-compose
   docker tag macosui-staging-test:latest ghcr.io/minoru61/macosui-web:latest
 
-  # --- Database Backup (Zero Data Loss) ---
-  if [ -f server/database.sqlite ]; then
+  # --- Database Initialization / Backup (Zero Data Loss) ---
+  if [ -d server/database.sqlite ]; then
+    rmdir server/database.sqlite 2>/dev/null || rm -rf server/database.sqlite
+  fi
+  if [ -d server/audit_database.sqlite ]; then
+    rmdir server/audit_database.sqlite 2>/dev/null || rm -rf server/audit_database.sqlite
+  fi
+  touch server/database.sqlite server/audit_database.sqlite
+
+  if [ -s server/database.sqlite ]; then
     TIMESTAMP=\$(date +\"%Y%m%d_%H%M%S\")
     cp server/database.sqlite server/database_backup_\${TIMESTAMP}.sqlite
     echo \"✅ Backed up database to server/database_backup_\${TIMESTAMP}.sqlite\"

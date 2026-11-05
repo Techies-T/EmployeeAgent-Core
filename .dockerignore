@@ -5,9 +5,18 @@ node_modules/
 /dist/
 
 # Local databases and secrets
-/server/database.sqlite
+/data/
+/certbot/
+/scratch/
+/server/database.sqlite*
+/server/audit_database.sqlite*
+/server/database_backup_*.sqlite*
 /server/db.json
 /server/development.env
+/server/staging.env
+/server/*.env
+*.sqlite*
+*.db
 .env
 .env.*
 *.local

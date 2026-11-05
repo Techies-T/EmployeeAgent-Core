@@ -550,6 +550,12 @@ async function autoActivate() {
         if (!(await db.getSetting('AI_PROVIDER'))) {
             await db.setSetting('AI_PROVIDER', process.env.AI_PROVIDER || 'gemini');
         }
+        if (!(await db.getSetting('GEMINI_MODEL'))) {
+            await db.setSetting('GEMINI_MODEL', process.env.GEMINI_MODEL || 'gemini-3.8-flash');
+        }
+        if (!(await db.getSetting('GEMINI_MCP_CHAT_MODEL'))) {
+            await db.setSetting('GEMINI_MCP_CHAT_MODEL', process.env.GEMINI_MCP_CHAT_MODEL || 'gemini-3.8-flash');
+        }
         if (!(await db.getSetting('CLAUDE_MODEL'))) {
             await db.setSetting('CLAUDE_MODEL', process.env.CLAUDE_MODEL || 'claude-sonnet-4-5');
         }
