@@ -572,9 +572,9 @@ app.post('/api/config', requireAuthIfConfigured, async (req, res) => {
         }
 
         const allowedWidgets = req.user.allowed_widgets || [];
-        const hasBase = hasWorkflowEdit || allowedWidgets.includes('workflow:deepresearch_html') || allowedWidgets.includes('workflow:deepresearch_infographic') || allowedWidgets.includes('workflow:deepresearch_full');
-        const hasHtml = hasWorkflowEdit || allowedWidgets.includes('workflow:deepresearch_html') || allowedWidgets.includes('workflow:deepresearch_full');
-        const hasInfo = hasWorkflowEdit || allowedWidgets.includes('workflow:deepresearch_infographic') || allowedWidgets.includes('workflow:deepresearch_full');
+        const hasBase = hasSysSettings || hasWorkflowEdit || allowedWidgets.includes('*') || allowedWidgets.includes('workflow:deepresearch_html') || allowedWidgets.includes('workflow:deepresearch_infographic') || allowedWidgets.includes('workflow:deepresearch_full');
+        const hasHtml = hasSysSettings || hasWorkflowEdit || allowedWidgets.includes('*') || allowedWidgets.includes('workflow:deepresearch_html') || allowedWidgets.includes('workflow:deepresearch_full');
+        const hasInfo = hasSysSettings || hasWorkflowEdit || allowedWidgets.includes('*') || allowedWidgets.includes('workflow:deepresearch_infographic') || allowedWidgets.includes('workflow:deepresearch_full');
 
         // Manage General Gemini & Claude Model
         if (geminiModel) {
@@ -915,6 +915,7 @@ app.post('/api/auth/google', async (req, res) => {
                 } catch (e) {
                     console.error("Failed to fetch RBAC_POLICIES for JWT generation", e);
                 }
+                rbacPolicies = ztaPdpService.hydrateAllPolicies(rbacPolicies);
 
                 const roles = (role || 'user').split(',').map(r => r.trim());
                 let allowed_widgets_set = new Set();
@@ -947,7 +948,7 @@ app.post('/api/auth/google', async (req, res) => {
                 db.run(`INSERT INTO users (google_id, email, name, avatar_url, access_token, refresh_token, role, token_expiry, last_active_at) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) 
                     ON CONFLICT(google_id) DO UPDATE SET 
-                    email=excluded.email, name=excluded.name, avatar_url = CASE WHEN users.avatar_url LIKE 'data:image%' THEN users.avatar_url ELSE excluded.avatar_url END, access_token=excluded.access_token, token_expiry=excluded.token_expiry, last_active_at=excluded.last_active_at, status_text = CASE WHEN LOWER(COALESCE(users.status_text, '')) = 'offline' THEN 'Active' ELSE COALESCE(users.status_text, 'Active') END` + (refreshToken ? `, refresh_token=excluded.refresh_token` : ``),
+                    email=excluded.email, name=excluded.name, role=excluded.role, avatar_url = CASE WHEN users.avatar_url LIKE 'data:image%' THEN users.avatar_url ELSE excluded.avatar_url END, access_token=excluded.access_token, token_expiry=excluded.token_expiry, last_active_at=excluded.last_active_at, status_text = CASE WHEN LOWER(COALESCE(users.status_text, '')) = 'offline' THEN 'Active' ELSE COALESCE(users.status_text, 'Active') END` + (refreshToken ? `, refresh_token=excluded.refresh_token` : ``),
                     [googleId, email, name, avatarUrl, accessToken, refreshToken || null, role, expiryDate, nowIso],
                     function (err) {
                         if (err) {
@@ -1319,6 +1320,7 @@ app.get('/api/auth/me', (req, res) => {
                 } catch (e) {
                     console.error("Failed to fetch RBAC_POLICIES in /api/auth/me", e);
                 }
+                rbacPolicies = ztaPdpService.hydrateAllPolicies(rbacPolicies);
 
                 const roles = (user.role || 'user').split(',').map(r => r.trim());
                 let allowed_widgets_set = new Set();
@@ -2362,6 +2364,7 @@ function requireAgentOrUserAuth(req, res, next) {
             } catch(e) {
                 rbacPolicies = {};
             }
+            rbacPolicies = ztaPdpService.hydrateAllPolicies(rbacPolicies);
             
             const roles = (row.role || 'user').split(',').map(r => r.trim());
             const allowed_widgets_set = new Set();
@@ -2370,7 +2373,7 @@ function requireAgentOrUserAuth(req, res, next) {
             const allowed_models_set = new Set();
 
             roles.forEach(roleName => {
-                const policy = rbacPolicies[roleName] || {};
+                const policy = rbacPolicies[roleName] || rbacPolicies['user'] || {};
                 const widgets = policy.allowed_widgets || [];
                 const actions = policy.allowed_actions || [];
                 const models = policy.allowed_models || [];
@@ -2383,8 +2386,9 @@ function requireAgentOrUserAuth(req, res, next) {
                 });
             });
 
-            req.user.allowed_widgets = Array.from(allowed_widgets_set);
-            req.user.allowed_actions = Array.from(allowed_actions_set);
+            ['app:settings'].forEach(w => allowed_widgets_set.add(w));
+            req.user.allowed_widgets = allowed_widgets_set.has('*') ? ['*'] : Array.from(allowed_widgets_set);
+            req.user.allowed_actions = allowed_actions_set.has('*') ? ['*'] : Array.from(allowed_actions_set);
             req.user.allowed_models = hasWildcardModels ? ['*'] : Array.from(allowed_models_set);
 
             return next();
@@ -2497,6 +2501,7 @@ function requireAuth(req, res, next) {
             } catch(e) {
                 rbacPolicies = {};
             }
+            rbacPolicies = ztaPdpService.hydrateAllPolicies(rbacPolicies);
             
             const roles = (row.role || 'user').split(',').map(r => r.trim());
             const allowed_widgets_set = new Set();
@@ -2732,6 +2737,7 @@ app.get('/api/users/:id/permissions', requireAuth, (req, res) => {
         } catch (e) {
             console.error("Failed to fetch RBAC_POLICIES for permissions API", e);
         }
+        rbacPolicies = ztaPdpService.hydrateAllPolicies(rbacPolicies);
 
         const roles = (user.role || 'user').split(',').map(r => r.trim());
         let allowed_widgets_set = new Set();

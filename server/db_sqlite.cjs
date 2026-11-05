@@ -365,6 +365,11 @@ function initDb() {
     db.run("ALTER TABLE rag_files ADD COLUMN local_cache_path TEXT", (err) => {
         // Ignore error if column exists
     });
+
+    // Execute autoActivate only after all schema creation/migration statements in db.serialize have finished
+    db.run("SELECT 1", () => {
+        autoActivate();
+    });
     }); // End db.serialize
 }
 
@@ -1092,8 +1097,5 @@ Tailwind CSSのCDNを利用してモダンなデザインにし、純粋なHTML�
         console.error('Error during auto-activation:', error);
     }
 }
-
-// Call autoActivate immediately after initialization (since setting getter/setters are promises)
-setTimeout(() => autoActivate(), 1000);
 
 module.exports = db;
