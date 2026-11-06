@@ -412,9 +412,23 @@ async function callMcpTool(name, args, allowedWidgets = ['*'], user = null, req 
     const executeWithRetry = async () => {
         try {
             const client = await ensureConnection(targetConnState, user, req);
+            const endpointStr = targetConnState.endpoint_url || '';
+            const isZtaGatewayProxy = endpointStr.includes(':8085') || endpointStr.includes('zta-mcp-gateway');
+            const toolCallArgs = (isZtaGatewayProxy && user)
+                ? {
+                    ...(args || {}),
+                    _zta_context: {
+                        user_id: user.id || null,
+                        user_email: user.email || null,
+                        user_name: user.name || null,
+                        user_roles: userRoles
+                    }
+                }
+                : (args || {});
+
             const result = await client.callTool({
                 name: name,
-                arguments: args || {}
+                arguments: toolCallArgs
             });
 
             console.log(`[MCP Exec] ✅ Tool '${name}' completed successfully.`);

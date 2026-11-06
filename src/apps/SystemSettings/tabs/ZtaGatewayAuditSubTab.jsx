@@ -59,6 +59,8 @@ const ZtaGatewayAuditSubTab = () => {
         const tablesStr = (log.sql_inspection?.target_tables || []).join(' ').toLowerCase();
         const queryStr = (log.sql_inspection?.sanitized_query || '').toLowerCase();
         const clientStr = (log.client?.client_id || '').toLowerCase();
+        const userEmailStr = (log.client?.user_email || '').toLowerCase();
+        const userNameStr = (log.client?.user_name || '').toLowerCase();
         const toolStr = (log.upstream?.tool_name || '').toLowerCase();
 
         const matchesSearch = 
@@ -66,6 +68,8 @@ const ZtaGatewayAuditSubTab = () => {
             tablesStr.includes(searchLower) ||
             queryStr.includes(searchLower) ||
             clientStr.includes(searchLower) ||
+            userEmailStr.includes(searchLower) ||
+            userNameStr.includes(searchLower) ||
             toolStr.includes(searchLower);
 
         const matchesAction = 
@@ -251,7 +255,7 @@ const ZtaGatewayAuditSubTab = () => {
                             <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
                                 <tr>
                                     <th className="py-2.5 px-3">日時 (JST)</th>
-                                    <th className="py-2.5 px-3">クライアント</th>
+                                    <th className="py-2.5 px-3">実行ユーザー / A2Aクライアント</th>
                                     <th className="py-2.5 px-3">対象MCP / ツール</th>
                                     <th className="py-2.5 px-3">対象テーブル</th>
                                     <th className="py-2.5 px-3">操作種別</th>
@@ -276,8 +280,21 @@ const ZtaGatewayAuditSubTab = () => {
                                                     hour: '2-digit', minute: '2-digit', second: '2-digit'
                                                 })}
                                             </td>
-                                            <td className="py-2 px-3 font-semibold text-slate-200">
-                                                {log.client?.client_id || 'unknown'}
+                                            <td className="py-2 px-3">
+                                                {log.client?.user_email ? (
+                                                    <div className="flex flex-col">
+                                                        <span className="font-sans font-semibold text-white text-[11px]">
+                                                            👤 {log.client.user_email}
+                                                        </span>
+                                                        <span className="text-[10px] text-slate-500">
+                                                            🔑 A2A: {log.client?.client_id || 'unknown'}
+                                                        </span>
+                                                    </div>
+                                                ) : (
+                                                    <span className="font-semibold text-slate-200">
+                                                        🔑 {log.client?.client_id || 'unknown'}
+                                                    </span>
+                                                )}
                                             </td>
                                             <td className="py-2 px-3">
                                                 <span className="text-slate-400">{log.upstream?.upstream_id}</span>
@@ -403,10 +420,15 @@ const ZtaGatewayAuditSubTab = () => {
                                     </div>
                                     <div className="grid grid-cols-2 gap-2 text-[11px]">
                                         <div className="bg-slate-950/60 p-2.5 rounded-lg border border-slate-800">
-                                            <span className="text-slate-400">対象テーブル:</span>
+                                            <span className="text-slate-400">対象テーブル / 参照カラム:</span>
                                             <div className="font-bold text-white mt-0.5">
                                                 {selectedLog.sql_inspection.target_tables.join(', ') || 'なし'}
                                             </div>
+                                            {selectedLog.sql_inspection.accessed_columns?.length > 0 && (
+                                                <div className="text-[10px] text-sky-400 mt-0.5">
+                                                    カラム: {selectedLog.sql_inspection.accessed_columns.join(', ')}
+                                                </div>
+                                            )}
                                         </div>
                                         <div className="bg-slate-950/60 p-2.5 rounded-lg border border-slate-800">
                                             <span className="text-slate-400">操作種別 / サブクエリ:</span>
@@ -422,8 +444,24 @@ const ZtaGatewayAuditSubTab = () => {
                             {/* Client & Execution Context */}
                             <div className="grid grid-cols-2 gap-2 text-[11px]">
                                 <div className="bg-slate-950/60 p-2.5 rounded-lg border border-slate-800 space-y-1">
-                                    <div><span className="text-slate-400">クライアントID:</span> <span className="font-bold">{selectedLog.client?.client_id}</span></div>
-                                    <div><span className="text-slate-400">ロール:</span> [{selectedLog.client?.roles?.join(', ')}]</div>
+                                    <div>
+                                        <span className="text-slate-400">実行ユーザー (社員):</span>{' '}
+                                        <span className="font-bold text-sky-300">
+                                            {selectedLog.client?.user_email || '未特定 (A2A直接通信)'}
+                                        </span>
+                                        {selectedLog.client?.user_id && (
+                                            <span className="text-slate-500 ml-1">(ID: {selectedLog.client.user_id})</span>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <span className="text-slate-400">社員ロール:</span>{' '}
+                                        [{(selectedLog.client?.user_roles || selectedLog.client?.roles || []).join(', ')}]
+                                    </div>
+                                    <div>
+                                        <span className="text-slate-400">A2A クライアントID:</span>{' '}
+                                        <span className="font-bold">{selectedLog.client?.client_id}</span>
+                                        <span className="text-slate-500 ml-1">([{selectedLog.client?.roles?.join(', ')}])</span>
+                                    </div>
                                     <div><span className="text-slate-400">IPアドレス:</span> {selectedLog.client?.ip_address}</div>
                                 </div>
                                 <div className="bg-slate-950/60 p-2.5 rounded-lg border border-slate-800 space-y-1">

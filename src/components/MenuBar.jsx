@@ -94,7 +94,7 @@ const MenuBar = ({ onLogout, onOpenSettings, notifications = [], onNotificationC
                             flexDirection: 'column',
                             color: '#000'
                         }}>
-                            <div className="px-4 py-1 hover:bg-blue-500 hover:text-white rounded cursor-default">About Employee Agent (v{pkg.version})</div>
+                            <div className="px-4 py-1 hover:bg-blue-500 hover:text-white rounded cursor-default">About Employee Agent Core (v{pkg.version})</div>
                             <div className="h-[1px] bg-gray-300 my-1 mx-2"></div>
                             <div
                                 className="px-4 py-1 hover:bg-blue-500 hover:text-white rounded cursor-pointer"

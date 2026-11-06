@@ -1,7 +1,7 @@
 {
   "name": "macosui",
   "private": true,
-  "version": "3.0.2",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run server\" \"vite\"",

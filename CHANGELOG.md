@@ -3,6 +3,26 @@
 本プロジェクトのすべての主要な変更履歴は本ファイルに記録されます。
 フォーマットは [Keep a Changelog](https://keepachangelog.com/ja/1.0.0/) に準拠し、バージョン番号は [セマンティック バージョニング](https://semver.org/lang/ja/) に従います。
 
+## [EA-Core v1.0.0] - 2026-11-06
+
+### 🚀 EmployeeAgent-Core 1.0.0 初回メジャーリリース (ZTA MCP Analytics & Knowledge Platform)
+
+#### 🛡️ Zero Trust Architecture (ZTA) & 監査トレーサビリティ強化
+- **ZTA-MCP-Gateway トランザクション監査への実行ユーザー（End-User）アイデンティティ伝播 (`server/mcpClient.cjs`, `server/routes/ztaAudit.cjs`, `src/apps/SystemSettings/tabs/ZtaGatewayAuditSubTab.jsx`)**:
+  - A2A OAuth クライアントID（`macosui-analyst` 等）だけでなく、実際に操作を行った社員のユーザーID・メールアドレス・ロール（`_zta_context`）をゲートウェイ監査ログへ伝播・突合し、一覧および詳細モーダルで「どの社員がどの SQL を発行し、どのテーブル・カラムを参照したか」を完全追跡可能に改善。
+- **ZTA 厳格データ分離（システムプロンプトからの実データ数値排除） (`server/routes/mcpChat.cjs`, `server/db_sqlite.cjs`)**:
+  - システムプロンプトおよび定型プロンプトから実データのサマリ数値を排除し、スキーマ定義（テーブル名・カラム名）のみに限定。MCP ツール未接続時や権限外アクセス時にプロンプト知識から数値を補完することを禁止。
+- **クリーン Activation & 初期 RBAC ポリシーの確実なハイドレート (`server/db_sqlite.cjs`, `server/index.cjs`)**:
+  - 空データベースからの初回 Activation 時に `initDb()` の全テーブル生成完了後に `autoActivate()` を直列実行し、`requireAuth` 等での PDP 動的ハイドレートを統一。
+
+#### 📊 MCP ワークフロー & ナレッジベース統合
+- **MCP 生成ダッシュボードのメタデータ・公開共有 URL 付きナレッジ登録 (`src/components/McpChatWindow.jsx`, `server/routes/mcpChat.cjs`)**:
+  - Deep Research と同等のメタデータヘッダー（プロンプト情報・モデル情報・消費トークン数・ツール実行回数・EA 内共有 URL `/shared/:uuid`）を付与してナレッジベースおよび経営会議ブリーフィングへ登録する機能を実装。
+- **長時間推論・大規模 HTML/SVG ダッシュボード生成の耐障害性強化 (`server/routes/mcpChat.cjs`, `server/services/llmAdapter.cjs`, `server/nginx/nginx.conf`)**:
+  - SSE ハートビート（15秒間隔）とタイムアウト延長、および Nginx の Docker 内部 DNS 動的リゾルバ設定を追加し、`socket hang up` やコンテナ再起動時の `502 Bad Gateway` を防止。
+
+---
+
 ## [v3.0.2] - 2026-10-28
 
 ### 🛡️ ZTA セッションタイムアウト制御 & バーチャルオフィス Offline 自動遷移の厳格化

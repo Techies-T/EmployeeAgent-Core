@@ -1,11 +1,114 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db.cjs');
+const auditDb = require('../auditDb.cjs');
 
 // Cache for Gateway Admin JWT token (keyed by gatewayUrl)
 let cachedToken = null;
 let cachedGatewayUrl = null;
 let tokenExpiresAt = 0;
+
+/**
+ * Enrich ZTA Gateway transaction logs with EmployeeAgent end-user identity (user_email, user_id, user_roles)
+ * from either _zta_context propagated to Gateway or local security_logs correlation.
+ */
+async function enrichGatewayLogsWithUserIdentity(gatewayLogs = []) {
+    if (!Array.isArray(gatewayLogs) || gatewayLogs.length === 0) return gatewayLogs;
+
+    let localMcpLogs = [];
+    let allUsers = [];
+    try {
+        const rawSecurityLogs = await auditDb.getLogs(1000);
+        localMcpLogs = (rawSecurityLogs || [])
+            .filter(l => (l.event_type === 'mcp_tool_execution' || l.event_type === 'mcp_tool_access_blocked') && l.user_email)
+            .map(l => {
+                let parsedDetails = {};
+                if (l.details) {
+                    try { parsedDetails = typeof l.details === 'string' ? JSON.parse(l.details) : l.details; } catch (e) {}
+                }
+                const ts = l.created_at ? new Date(l.created_at.endsWith('Z') ? l.created_at : `${l.created_at}Z`).getTime() : 0;
+                return {
+                    ...l,
+                    parsedDetails,
+                    ts
+                };
+            });
+    } catch (e) { /* ignore */ }
+
+    try {
+        if (typeof db.getAllUsers === 'function') {
+            allUsers = await db.getAllUsers() || [];
+        }
+    } catch (e) { /* ignore */ }
+
+    const fallbackSingleUser = allUsers.length === 1 ? allUsers[0] : (allUsers.find(u => u.role === 'admin' || (u.roles && u.roles.includes('admin'))) || null);
+
+    return gatewayLogs.map(log => {
+        if (log.client?.user_email) {
+            return log;
+        }
+
+        // Check if _zta_context was stored in details.args
+        const ctxInDetails = log.details?.args?._zta_context || log.details?._zta_context;
+        if (ctxInDetails?.user_email) {
+            return {
+                ...log,
+                client: {
+                    ...log.client,
+                    user_id: ctxInDetails.user_id || null,
+                    user_email: ctxInDetails.user_email,
+                    user_name: ctxInDetails.user_name || null,
+                    user_roles: ctxInDetails.user_roles || log.client?.roles || []
+                }
+            };
+        }
+
+        // Correlate with local security_logs by tool_name and timestamp proximity (within 30 seconds)
+        const gwTs = log.timestamp ? new Date(log.timestamp).getTime() : 0;
+        const toolName = log.upstream?.tool_name || '';
+        let bestMatch = null;
+        let minDiff = Infinity;
+
+        for (const localLog of localMcpLogs) {
+            const localTool = localLog.parsedDetails?.toolName || '';
+            if (toolName && localTool && localTool !== toolName) continue;
+            const diff = Math.abs(gwTs - localLog.ts);
+            if (diff < 60000 && diff < minDiff) {
+                minDiff = diff;
+                bestMatch = localLog;
+            }
+        }
+
+        if (bestMatch) {
+            const matchedUserObj = allUsers.find(u => u.email === bestMatch.user_email || u.id === bestMatch.user_id);
+            return {
+                ...log,
+                client: {
+                    ...log.client,
+                    user_id: bestMatch.user_id || matchedUserObj?.id || null,
+                    user_email: bestMatch.user_email,
+                    user_name: matchedUserObj?.name || null,
+                    user_roles: bestMatch.parsedDetails?.userRoles || matchedUserObj?.roles || log.client?.roles || []
+                }
+            };
+        }
+
+        if (fallbackSingleUser?.email) {
+            return {
+                ...log,
+                client: {
+                    ...log.client,
+                    user_id: fallbackSingleUser.id || null,
+                    user_email: fallbackSingleUser.email,
+                    user_name: fallbackSingleUser.name || null,
+                    user_roles: fallbackSingleUser.roles || [fallbackSingleUser.role || 'admin']
+                }
+            };
+        }
+
+        return log;
+    });
+}
 
 /**
  * Resolve candidate ZTA Gateway URLs dynamically from env, registered MCP servers in DB, and Docker/local defaults
@@ -140,10 +243,12 @@ router.get('/logs', requireAdmin, async (req, res) => {
         }
 
         const data = await gatewayRes.json();
+        const enrichedLogs = await enrichGatewayLogsWithUserIdentity(data.logs || []);
         return res.json({
             connected: true,
             gatewayUrl,
-            ...data
+            ...data,
+            logs: enrichedLogs
         });
     } catch (err) {
         // Graceful degradation when Gateway is unreachable
@@ -184,10 +289,12 @@ router.get('/summary', requireAdmin, async (req, res) => {
         }
 
         const data = await gatewayRes.json();
+        const enrichedLogs = await enrichGatewayLogsWithUserIdentity(data.logs || []);
         return res.json({
             connected: true,
             gatewayUrl,
-            ...data
+            ...data,
+            logs: enrichedLogs
         });
     } catch (err) {
         return res.json({
