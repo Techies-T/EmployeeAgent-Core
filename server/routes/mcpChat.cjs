@@ -251,28 +251,20 @@ Knowledge Base MCP Reference:
 - \`get_knowledge_token_counts\`: Returns total, input, and output token counts grouped by \`groupBy\` (\`"article"\`, \`"author"\`, \`"monthly"\`, \`"quarterly"\`, \`"half-yearly"\`, \`"yearly"\`).
 - \`get_author_post_counts\`: Returns the number of knowledge base articles posted by each author grouped by \`period\` (\`"monthly"\`, \`"quarterly"\`, \`"half-yearly"\`, \`"yearly"\`).
 
-Database Multi-Year Notice (MariaDB NPB):
-The database contains official multi-year records for 2024, 2025, and 2026 NPB seasons (Source: NPB Official npb.jp as of October 2026 Season Conclusion):
-- 2026 Japan Series Context:
-  - Pacific League Champion: 福岡ソフトバンクホークス (91勝 48敗 3分, 勝率 .655) - CS Finalで西武を破り日本シリーズ進出！
-  - Central League Champion: 阪神タイガース (77勝 60敗 2分, 勝率 .562) がペナント優勝したが、クライマックスシリーズ(CS)ファイナルステージで3位の横浜DeNAベイスターズに敗退（DeNAが下克上で日本シリーズ進出！）。
-  - 2026 日本シリーズ対決: 福岡ソフトバンクホークス vs 横浜DeNAベイスターズ（2024年にDeNAが4勝2敗で日本一になった因縁のリマッチ！）。
-- \`batting_stats\` table includes \`year\` (2024, 2025, 2026), batting metrics, RISP stats, OPS, wOBA, and \`title_awards\` (e.g., 佐藤輝明: 2026年 セ・リーグ三冠王[打率.314/39本/105点]・セMVP、近藤健介: 2026年 パ最高出塁率[.435/打率.318/25本/92点]、栗原陵矢: 2026年 パ本塁打王[40本]・パ打点王[118点]、レイエス: 2026年 パ首位打者[打率.313/32本/82点]、牧秀悟: 2026年 打率.294/26本/86点[DeNA CS突破主将]、オースティン: 2026年 打率.312/24本/72点/OPS.955、森下翔太: 2026年 打率.294/35本/84点、周東佑京: 48盗塁[パ盗塁王]、近本光司: 32盗塁[セ盗塁王])。
-- \`pitching_stats\` table includes \`year\` (2024, 2025, 2026), games_started, wins, losses, saves, holds, era, whip, strikeouts, innings_pitched, war, and \`title_awards\` (e.g., 髙橋遥人: 2026年 セ最多勝[16勝/防御率1.87]、平良海馬: 2026年 パ最優秀防御率[1.36]、モイネロ: 2026年 パ防御率1.66/13勝4敗、有原航平: 2026年 パ最多勝[14勝]、東克樹: 2026年 セ14勝/防御率2.22[DeNA大エース]、ジャクソン: 11勝/145K、ケイ: 10勝/CS第3戦勝利、村上頌樹: セ最優秀防御率[1.85]、才木浩人: セ最多奪三振[175K]、北山亘基＆エスピノーザ: パ最多勝タイ[13勝]、荘司康誠: パ最多奪三振[171K]、R.マルティネス: セ最多セーブ[42S]、杉山一樹＆マチャド: パ最多セーブタイ[35S]、森原康平: 32S[DeNA守護神・CS胴上げ投手])。
-- \`team_standings\` table includes official standings for 2024, 2025, and 2026 (2026年: セ・リーグは阪神タイガース優勝[77勝 60敗 2分, 勝率 .562]、パ・リーグは福岡ソフトバンクホークス優勝[91勝 48敗 3分, 勝率 .655])。
-- \`games\` table contains direct matchups including 2024 Japan Series (DeNA 4-2 Softbank), 2026 Interleague (Softbank 2-1 DeNA), 2026 CS Final Series (DeNA beats Hanshin 3-1 + 1 adv; Softbank beats Seibu), and 2026 Japan Series upcoming games.
-When answering questions regarding player growth, team changes, Softbank vs DeNA analysis, or specific seasons, query the appropriate tables (including \`games\` for head-to-head records) or compare 2024 vs 2025 vs 2026.
-
 Database Schema Reference (MariaDB NPB):
+- ZTA STRICT DATA ISOLATION RULE:
+  - Actual statistics, win-loss records, standings, and player metrics are NOT stored in this system prompt.
+  - You MUST retrieve all data exclusively by executing the authorized MariaDB MCP tools (\`list_tables\`, \`describe_table\`, \`read_query\`).
+  - If the MariaDB MCP tools are not available in your tool list or return an authorization/connection error, DO NOT generate a dashboard from pre-existing knowledge or prompt text; clearly report that the database tool is unavailable or unauthorized.
 - Table \`players\`: \`player_id\` (PRIMARY KEY, INT), \`team_id\` (VARCHAR), \`name\` (VARCHAR), \`position\` (VARCHAR), \`bats_throws\` (VARCHAR)
   CRITICAL: The primary key of \`players\` is \`player_id\` (NOT \`id\`).
 - Table \`teams\`: \`team_id\` (PRIMARY KEY, VARCHAR), \`team_name\` (VARCHAR), \`league\` (VARCHAR), \`wins\`, \`losses\`, \`draws\`, \`win_rate\`, \`games_behind\`, \`runs_scored\`, \`runs_allowed\`
   CRITICAL: The columns are \`team_id\` and \`team_name\` (NOT \`id\` and NOT \`name\`).
   Join syntax: \`JOIN teams ON players.team_id = teams.team_id\`
 - Table \`team_standings\`: \`id\` (PK, INT), \`team_id\` (VARCHAR), \`team_name\` (VARCHAR), \`league\` (VARCHAR), \`year\` (INT), \`wins\`, \`losses\`, \`draws\`, \`win_rate\`, \`games_behind\`, \`runs_scored\`, \`runs_allowed\`
-- Table \`batting_stats\`: \`id\` (PK, INT), \`player_id\` (INT), \`year\` (2024, 2025, 2026), \`at_bats\`, \`hits\`, \`home_runs\`, \`rbi\`, \`risp_at_bats\`, \`risp_hits\`, \`risp_avg\`, \`batting_avg\`, \`obp\`, \`slg\`, \`ops\`, \`woba\`, \`walks\`, \`strikeouts\`, \`war\`, \`waa\`, \`title_awards\`
+- Table \`batting_stats\`: \`id\` (PK, INT), \`player_id\` (INT), \`year\` (INT), \`at_bats\`, \`hits\`, \`home_runs\`, \`rbi\`, \`risp_at_bats\`, \`risp_hits\`, \`risp_avg\`, \`batting_avg\`, \`obp\`, \`slg\`, \`ops\`, \`woba\`, \`walks\`, \`strikeouts\`, \`war\`, \`waa\`, \`title_awards\`
   Join syntax: \`JOIN players ON batting_stats.player_id = players.player_id\`
-- Table \`pitching_stats\`: \`id\` (PK, INT), \`player_id\` (INT), \`year\` (2024, 2025, 2026), \`games\`, \`games_started\`, \`wins\`, \`losses\`, \`saves\`, \`holds\`, \`innings_pitched\`, \`hits_allowed\`, \`runs_allowed\`, \`earned_runs\`, \`home_runs_allowed\`, \`walks\`, \`strikeouts\`, \`era\`, \`whip\`, \`fip\`, \`war\`, \`waa\`, \`title_awards\`
+- Table \`pitching_stats\`: \`id\` (PK, INT), \`player_id\` (INT), \`year\` (INT), \`games\`, \`games_started\`, \`wins\`, \`losses\`, \`saves\`, \`holds\`, \`innings_pitched\`, \`hits_allowed\`, \`runs_allowed\`, \`earned_runs\`, \`home_runs_allowed\`, \`walks\`, \`strikeouts\`, \`era\`, \`whip\`, \`fip\`, \`war\`, \`waa\`, \`title_awards\`
   Join syntax: \`JOIN players ON pitching_stats.player_id = players.player_id\`
 - Table \`games\`: \`id\` (PK, INT), \`game_date\` (DATE), \`season_year\` (INT), \`game_type\` (VARCHAR: 'Regular', 'Interleague', 'CS_Final', 'JapanSeries'), \`home_team\` (VARCHAR), \`away_team\` (VARCHAR), \`home_score\` (INT), \`away_score\` (INT), \`stadium\` (VARCHAR), \`winning_pitcher\` (VARCHAR), \`losing_pitcher\` (VARCHAR), \`save_pitcher\` (VARCHAR), \`notes\` (VARCHAR)
   Use this table to analyze head-to-head records (対戦成績), CS results, and Japan Series matchups.
