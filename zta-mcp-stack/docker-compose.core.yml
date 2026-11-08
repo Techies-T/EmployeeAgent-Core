@@ -1,0 +1,37 @@
+version: "3.8"
+
+networks:
+  mcp-net:
+    driver: bridge
+
+services:
+  # ============================================================================
+  # ZTA-MCP-Gateway (Core Standalone: Gateway Only)
+  # サンプルDBやツールを含まない、軽量なセキュリティ認証・認可プロキシ単体構成です。
+  # ============================================================================
+  zta-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: techies-t/zta-mcp-gateway:latest
+    container_name: zta-mcp-gateway
+    restart: unless-stopped
+    ports:
+      - "8085:8080" # 外部に公開する唯一のポート
+    environment:
+      - NODE_ENV=production
+      - GATEWAY_CONFIG_PATH=/app/config/gateway-config.yaml
+      - GATEWAY_JWT_SECRET=${GATEWAY_JWT_SECRET:-super-secret-key-for-local-docker}
+    volumes:
+      - ./config/gateway-config.core.yaml:/app/config/gateway-config.yaml:ro
+      - ./config/catalog-definitions.yaml:/app/config/catalog-definitions.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - mcp-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

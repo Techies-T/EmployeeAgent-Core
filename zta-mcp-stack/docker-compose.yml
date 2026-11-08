@@ -1,0 +1,38 @@
+version: "3.8"
+
+services:
+  zta-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: techies-t/zta-mcp-gateway:latest
+    container_name: zta-mcp-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=production
+      - GATEWAY_CONFIG_PATH=/app/config/gateway-config.yaml
+      - GATEWAY_JWT_SECRET=super-secret-key-for-local-docker
+    volumes:
+      - ./config/gateway-config.container.yaml:/app/config/gateway-config.yaml:ro
+      - ./config/catalog-definitions.yaml:/app/config/catalog-definitions.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  admin-procedures-mcp:
+    build:
+      context: ./services/administrative-procedures-mcp
+      dockerfile: Dockerfile
+    image: techies-t/admin-procedures-mcp:latest
+    container_name: admin-procedures-mcp
+    restart: unless-stopped
+    ports:
+      - "33070:33070"
+    environment:
+      - ADMIN_PROCEDURES_HOST=0.0.0.0
+      - ADMIN_PROCEDURES_PORT=33070

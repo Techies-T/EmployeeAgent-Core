@@ -44,3 +44,4 @@ pnpm-debug.log*
 
 # Project specific
 .gemini/
+/zta-mcp-stack/

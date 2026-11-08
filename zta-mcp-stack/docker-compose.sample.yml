@@ -1,0 +1,106 @@
+version: "3.8"
+
+networks:
+  mcp-net:
+    driver: bridge
+
+volumes:
+  mariadb_data:
+
+services:
+  # ============================================================================
+  # 1. ZTA-MCP-Gateway (唯一の公開エンドポイント)
+  # ============================================================================
+  zta-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: techies-t/zta-mcp-gateway:latest
+    container_name: zta-mcp-gateway
+    restart: unless-stopped
+    ports:
+      - "8085:8080" # 外部に公開する唯一のポート
+    environment:
+      - NODE_ENV=production
+      - GATEWAY_CONFIG_PATH=/app/config/gateway-config.yaml
+      - GATEWAY_JWT_SECRET=${GATEWAY_JWT_SECRET:-super-secret-key-for-local-docker}
+    volumes:
+      - ./config/gateway-config.sample.yaml:/app/config/gateway-config.yaml:ro
+      - ./config/catalog-definitions.yaml:/app/config/catalog-definitions.yaml:ro
+    depends_on:
+      - mariadb-mcp
+      - admin-procedures-mcp
+    networks:
+      - mcp-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================================================
+  # 2. NPB サンプル用 MariaDB (公式戦 2024-2026年 確定データ)
+  # ============================================================================
+  test_mariadb:
+    image: mariadb:10.11
+    container_name: test_mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: my-secret-pw
+      MARIADB_DATABASE: testdb
+      MARIADB_USER: testuser
+      MARIADB_PASSWORD: testpassword
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./setup_npb_data.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - mariadb_data:/var/lib/mysql
+    networks:
+      - mcp-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================================================
+  # 3. MariaDB MCP サーバー
+  # ============================================================================
+  mariadb-mcp:
+    build:
+      context: ./services/mariadb-mcp
+      dockerfile: Dockerfile
+    image: techies-t/mariadb-mcp:latest
+    container_name: mariadb-mcp
+    restart: unless-stopped
+    ports:
+      - "33060:33060"
+    environment:
+      - NODE_ENV=production
+      - MCP_PORT=33060
+      - MCP_HOST=0.0.0.0
+      - DB_HOST=test_mariadb
+      - DB_PORT=3306
+      - DB_USER=testuser
+      - DB_PASSWORD=testpassword
+      - DB_NAME=testdb
+    depends_on:
+      - test_mariadb
+    networks:
+      - mcp-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================================================
+  # 4. デジタル庁 行政手続き MCP サーバー (サンプル)
+  # ============================================================================
+  admin-procedures-mcp:
+    build:
+      context: ./services/administrative-procedures-mcp
+      dockerfile: Dockerfile
+    image: techies-t/admin-procedures-mcp:latest
+    container_name: admin-procedures-mcp
+    restart: unless-stopped
+    ports:
+      - "33070:33070"
+    environment:
+      - ADMIN_PROCEDURES_HOST=0.0.0.0
+      - ADMIN_PROCEDURES_PORT=33070
+    networks:
+      - mcp-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

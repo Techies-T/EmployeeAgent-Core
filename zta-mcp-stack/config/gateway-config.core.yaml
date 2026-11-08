@@ -1,0 +1,62 @@
+version: "1.0"
+
+server:
+  port: 8080
+  host: "0.0.0.0"
+  cors:
+    origin: "*"
+
+auth:
+  issuer: "https://auth.techies.tokyo"
+  audience: "zta-mcp-gateway"
+  local_jwt_secret_env: "GATEWAY_JWT_SECRET"
+  clients:
+    - client_id: "macosui-analyst"
+      client_secret: "analyst-secret-2026"
+      roles: ["analyst"]
+    - client_id: "macosui-admin"
+      client_secret: "admin-secret-2026"
+      roles: ["admin"]
+
+catalog:
+  definitions_file: "./catalog-definitions.yaml"
+
+secrets:
+  provider: "local"
+
+# ==============================================================================
+# Upstream MCP Servers (Core Standalone Mode)
+# サンプルデータ（MariaDB / デジ庁）を含まない、顧客環境・外部MCP専用の設定です。
+# ==============================================================================
+upstreams:
+  - id: "catalog"
+    path: "/mcp/catalog"
+    target: "internal://catalog"
+    description: "Meta-Catalog MCP for Database Schemas and Tool Definitions"
+    policies:
+      role_mappings:
+        guest:
+          allowed_tools: []
+        analyst:
+          allowed_tools:
+            - "list_catalog"
+            - "get_catalog_detail"
+        admin:
+          allowed_tools:
+            - "*"
+
+  # 顧客が自社のMCPサーバーを保護するためのテンプレート例
+  - id: "customer-mcp"
+    path: "/mcp/customer"
+    target: "http://host.docker.internal:3000/mcp"
+    description: "Customer Internal MCP Server (Protected by Zero Trust Architecture)"
+    policies:
+      role_mappings:
+        guest:
+          allowed_tools: []
+        analyst:
+          allowed_tools:
+            - "*"
+        admin:
+          allowed_tools:
+            - "*"

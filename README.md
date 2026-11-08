@@ -1,552 +1,279 @@
-# MacOSUI - エージェント型 AI オペレーティングシステム (OSS)
+# 🛡️ EmployeeAgent-Core (EA-Core v1.0.0)
 
-MacOSUI は、人間と AI の協調作業のために設計された、オープンソース (Apache License 2.0) のプレミアムなウェブベース・オペレーティングシステムです。MacOS 風の親しみやすいインターフェースに、リサーチ、生産性向上、ナレッジベース管理のための強力な AI エージェントツールが統合されています。
+**Zero Trust Architecture (ZTA) 準拠・エンタープライズ AI エージェント デスクトップ OS & MCP データ分析プラットフォーム**
 
----
+[![Version](https://img.shields.io/badge/version-EA--Core%201.0.0-blue.svg)](./CHANGELOG.md)
+[![Architecture](https://img.shields.io/badge/Security-Zero%20Trust%20(NIST%20SP%20800--207)-emerald.svg)](#1-ea-core-とは何か--ea-core-でできること)
+[![Protocol](https://img.shields.io/badge/MCP-OAuth%202.0%20JWT%20%2B%20SSE-purple.svg)](#3-同梱-mcp-サンプルデータnpb-プロ野球--デジタル庁-行政手続データ)
 
-## 🚀 主な機能とエンタープライズ特長
+**EmployeeAgent-Core (`EA-Core`)** は、企業内のデータベース・業務システム・社内ナレッジを **Zero Trust Architecture (ZTA)** の厳格なガバナンス下で AI エージェント（Google Gemini / Anthropic Claude / ローカル LLM Gemma 4）と安全に接続し、自然言語によるデータ分析・インタラクティブ可視化（GenUI ダッシュボード生成）・経営会議ブリーフィングまでを一貫して行える Web デスクトップ OS 環境です。
 
-- **📊 AI Analytics (MCP×GenUI) ＆ ナレッジベース統合 (v2.6.0)**: チャット画面で MCP と生成 AI を活用して作成した動的ダッシュボード（HTML / Chart.js）をワンクリックでナレッジベースに保存。安全な iframe サンドボックスでナレッジベース上でも完全動作。
-- **👥 Pod とロールによるアクセス制御・限定公開**: 組織やプロジェクトごとに「Pod」を作成し、ロールベースアクセス制御（RBAC / PDP・PEP）によって特定メンバーのみにナレッジを限定共有。同僚や関係者は「AI トークン消費ゼロ・待ち時間ゼロ」でダッシュボードを閲覧・活用可能。
-- **🏛️ デジタル庁 行政手続等の棚卸調査（7.6万件）分析連携**: `zta-mcp-gateway v1.1.1` と連携し、全国 76,827 手続のオンライン化状況・申請件数・根拠法令を自律分析する MCP サーバー（`admin-procedures`）にネイティブ対応。
-- **AWS EC2 (x86_64 / AMD & Intel) シングルインスタンス設計**: 最小限のインフラコスト（`t3.micro` / `t3.small` 1台）で高速に立ち上げ可能なシンプルかつ堅牢な Docker デプロイアーキテクチャ。
-- **全自動プロビジョニング (CloudFormation & User Data)**: `cloudformation-cloudfront-ec2.yaml` をデプロイするだけで、VPC・EC2・HTTPS (CloudFront) 環境と、データ保護用の**外付けEBSボリューム**の構成・マウントまでを完全自動化。
-- **🛡️ Gemma 4 Local LLM-RAG (完全社内完結 / ゼロ外部漏洩)**: 外部クラウドへ 1 バイトも機密データを送ることなく、手元の Mac / オンプレミス GPU 上の **Gemma 4 (128K Long Context / KV Cache)** を活用して社内文書や HTML/SVG 構造化ナレッジを高速推論。
-- **🌐 ハイブリッド AI 接続 (AWS ⇄ ローカル Mac / Tailscale VPN)**: AWS 上の MacOSUI から、手元の Apple Silicon Mac 上で動作する Ollama / MLX (Gemma 4) に Tailscale 暗号化トンネル経由でシームレスにアクセス可能。
-- **AWS DynamoDB 超低コストナレッジ分離**: ナレッジデータを AWS DynamoDB (オンデマンド/永久無料枠 25GB) に分離可能。**月額コスト 0円 〜 数十円** で永続データを高速・安全に外部分離保管。
-- **ナレッジベース (Knowledge Base) Import/Export**: JSON パッケージによるナレッジデータのポータブルなインポート・エクスポートを完全サポート。
-- **RAG (Gemini File Search)**: Google Drive やローカルファイルを **Gemini 3.6 Flash** 以上の File Search 機能で高速に検索・要約（安価なトークンコストで非常に高速・高精度な **Gemini 3.6 Flash** の使用を強く推奨します）。
-- **Deep Research**: 自律型リサーチワークフローが詳細なレポート、インフォグラフィック、HTML を自動生成。
-- **ZTA セキュリティ & メモリ Zeroization**: Agent-to-Agent (A2A) 認証、RBAC、および使用直後のメモリ即時破棄 (`keyBuffer.fill(0)`) を搭載。
+本リポジトリには **EA-Core 本体** に加え、**ZTA-MCP-Gateway（SQL ファイアウォール＆データカタログ整合性検証プロキシ）** およびすぐに試せる **2種類の公式サンプル MCP サーバー（NPB プロ野球 2024〜2026 公式戦 MariaDB & デジタル庁 行政手続等棚卸調査データ）** が同梱されており、Fork / Clone して **1コマンド** でフルスタック環境を体験できます。
 
 ---
 
-## 💻 システム要件
+## 📑 目次
 
-| 項目 | 最低条件 | 推奨条件 (本番運用) |
-| :--- | :--- | :--- |
-| **デプロイ基盤** | **Single AWS EC2 (x86_64) / VPS** | Single AWS EC2 (`t3.small` / `t3a.small`) + Elastic IP / ALB |
-| **CPU アーキテクチャ** | **x86_64 (AMD / Intel)** | **x86_64 (AMD / Intel)** |
-| **クラウド AI モデル** | **Gemini 3.5 Flash 以上** | **Gemini 3.6 Flash (最推奨・低コスト)** / Pro |
-| **ローカル AI モデル** | **Gemma 4 (Ollama / MLX)** | **Gemma 4 (Apple Silicon M2/M3/M4, 128K Context)** |
-| **コンテナ構成** | 1 vCPU / 1 GB RAM (スワップ 2GB) | 2 vCPU / 2 GB RAM 以上 |
-| **ライセンス** | **Apache License 2.0** | オープンソース商用利用・改変・再配布可能 |
+1. [EA-Core とは何か / EA-Core でできること](#1-ea-core-とは何か--ea-core-でできること)
+2. [ウィジェット単位での段階的な機能拡張アーキテクチャ](#2-ウィジェット単位での段階的な機能拡張アーキテクチャ)
+3. [同梱 MCP サンプルデータ（NPB プロ野球 & デジタル庁 行政手続データ）](#3-同梱-mcp-サンプルデータnpb-プロ野球--デジタル庁-行政手続データ)
+4. [システム要件と MariaDB について](#4-システム要件と-mariadb-について)
+5. [ローカル PC で Fork / Clone してテストする方法（クイックスタート）](#5-ローカル-pc-で-fork--clone-してテストする方法クイックスタート)
+6. [さくらインターネット VPS へのデプロイ手順](#6-さくらインターネット-vps-へのデプロイ手順)
+7. [AWS (EC2) へのデプロイ手順](#7-aws-ec2-へのデプロイ手順)
+8. [初期 Activation（アクティベーション）の仕方とソフトウェアのアップデート（VUP）方法](#8-初期-activationアクティベーションの仕方とソフトウェアのアップデートvup方法)
 
 ---
 
-## 🏗 本番インフラ・アーキテクチャ図 (Single EC2 & ハイブリッド Local AI)
+## 1. EA-Core とは何か / EA-Core でできること
 
-本システムの標準構成（AWS EC2 ＋ Docker ＋ 手元 Mac の Gemma 4 とのハイブリッド連携）の構造図です。
+企業の AI 導入において最大の障壁となる「**AI が社内 DB にどんな SQL を投げたか分からない**」「**権限のない社員が AI 経由で機密テーブルを参照してしまう**」「**分析結果がその場限りで流れてしまい全社ナレッジにならない**」という課題を、OS レベルの UI と ZTA ゲートウェイの統合によって解決します。
 
 ```mermaid
-graph TD
-    User["🌐 ユーザー / ブラウザ"] -->|"HTTP: 8080 または HTTPS: 443"| EC2["AWS EC2 インスタンス (Amazon Linux 2023 x86_64)"]
-    
-    subgraph AWS_Cloud["AWS Cloud (ap-northeast-1)"]
-        subgraph EC2_Instance["EC2 Instance (t3.micro / t3.small)"]
-            DockerDaemon["Docker Engine & Compose"]
-            DockerDaemon --> Container["MacOSUI Web Container (macosui-web)"]
-            Container --> SQLite[("永続ボリューム: SQLite /data")]
-            SwapSpace["2GB Swap File (OOM保護)"]
-        end
-        
-        Container -->|"ナレッジ外部分離保管 (オプション)"| DynamoDB[("AWS DynamoDB: MacOSUI-KnowledgeArticles")]
-        Container -->|"機密キー保護"| SecretsManager["AWS Secrets Manager / KMS"]
+flowchart LR
+    subgraph Client["🖥️ EA-Core デスクトップ UI"]
+        User["👤 社員 (Google OAuth / Passkey)"]
+        Chat["💬 ノーマルチャット"]
+        MCP["🔌 MCP クライアント (GenUI 分析)"]
+        KB["📚 ナレッジベース & RAG"]
+        Brief["🏛️ 経営会議ブリーフィング"]
     end
-    
-    subgraph Local_Infrastructure["💻 お手元の Mac / オンプレミス GPU (社内)"]
-        OllamaLocal["Gemma 4 (Ollama: 11434 / MLX)"]
-        LocalKnowledge[("極秘社内文書 / HTML・SVG")]
-        OllamaLocal --- LocalKnowledge
+
+    subgraph CoreServer["⚙️ EA-Core API Server (PEP / PDP)"]
+        RBAC["🛡️ ZTA RBAC / PDP 認可エンジン"]
+        AuditCore["📋 本体セキュリティ監査 DB"]
+        Share["🔗 共有レポート配信 (/shared/:uuid)"]
     end
-    
-    Container -->|"AWS Client VPN / TLS 相互認証 閉域網 (ゼロ外部漏洩)"| OllamaLocal
-    Container -->|"RAG検索 & レポート保存"| GoogleDrive["Google Drive & Calendar API"]
-    Container -->|"AI推論・思考"| GeminiAPI["Google Gemini 3.6 Flash API"]
+
+    subgraph ZTAStack["🛡️ ZTA-MCP-Gateway (:8085)"]
+        OAuth["🔑 A2A OAuth 2.0 JWT 検証"]
+        SQLFW["🔥 SQL ディープインスペクション & ファイアウォール"]
+        Catalog["📑 YAML カタログ整合性検証 (逸脱検知)"]
+        AuditGW["🔍 ゲートウェイ トランザクション監査ログ"]
+    end
+
+    subgraph DataSources["🗄️ データソース & MCP サーバー群"]
+        MariaMCP["⚾ MariaDB MCP Server (:33060)"]
+        MariaDB[("🐬 MariaDB 10.11\n(NPB 2024-2026 / 業務DB)")]
+        AdminMCP["🏛️ デジタル庁 行政手続 MCP (:33070)"]
+    end
+
+    User --> Chat & MCP & KB & Brief
+    MCP --> RBAC
+    RBAC -->|"_zta_context (社員メール・ロール伝播)"| OAuth
+    OAuth --> SQLFW --> Catalog --> AuditGW
+    AuditGW --> MariaMCP --> MariaDB
+    AuditGW --> AdminMCP
+    MCP -->|"メタデータ + 共有URL保存"| KB --> Brief
+    KB --> Share
 ```
 
----
+### 主な機能
 
-## 🛠 デプロイメント＆構築ワークフロー
-
-MacOSUI-oss では、用途や運用環境に合わせて以下のデプロイメントパターンを用意しています。
-
-### Pattern A: ローカル開発・検証用 (Docker Compose)
-お手元の Mac / PC で手軽に起動・検証するための構成です。ローカルのソースコードからビルドされ、DBにはSQLiteが使用されます。
-1. 本リポジトリを Clone します。
-   ```bash
-   git clone https://github.com/Techies-T/MacOSUI-Community.git
-   cd MacOSUI-Community
-   ```
-2. コンテナを起動します。
-   ```bash
-   docker compose up -d --build
-   ```
-3. ブラウザで `http://localhost:8080` にアクセスし、アクティベーション画面から初期設定を行います。
+1. **🔌 ZTA 準拠 MCP クライアント & GenUI インタラクティブダッシュボード自動生成**
+   - 自然言語で分析指示を出すだけで、AI が MCP サーバー経由で DB から実データを抽出し、Tailwind CSS + Chart.js による**タブ切り替え・クリック連動型のインタラクティブ HTML ダッシュボード（GenUI）**を自動生成します。
+   - **ZTA 厳格データ分離**: システムプロンプトにはスキーマ定義（テーブル名・カラム名）のみを保持し、実データ数値は一切含めません。権限がない場合や DB 未接続時に AI がプロンプト知識から数値を捏造・漏洩することを防ぎます。
+2. **🛡️ ZTA-MCP-Gateway による SQL 監査・ファイアウォール・逸脱検知（エンドユーザー完全追跡）**
+   - すべての MCP 通信は OAuth 2.0 (`Client Credentials` + JWT) および SSE (`GET /sse`, `POST /message`) で保護されます。
+   - **社員メールアドレス単位の監査証跡**: A2A クライアント ID（`macosui-analyst` 等）だけでなく、**実際に画面を操作した社員のメールアドレス（`user_email`）・ユーザー ID・ロール**をゲートウェイ監査ログまで一気通貫で記録します。
+   - **SQL ディープインスペクション & カタログ逸脱検知**: AI が発行した SQL 全文、対象テーブル、参照カラム、実行時間（ms）を記録し、YAML カタログのホワイトリストに未定義のテーブルへアクセスした場合は **「⚠️ 逸脱検知 (`UNDEFINED_TABLE_ACCESS`)」** としてリアルタイムに警告表示します。
+3. **📚 ナレッジベース（RAG）& 経営会議ブリーフィング連携**
+   - MCP クライアントで生成したダッシュボードや分析レポートは、ワンクリックで **プロンプト・使用 AI モデル・消費トークン数（Input/Output/Total）・EA 内共有 URL（`/shared/:uuid`）** のメタデータヘッダー付きでナレッジベースや経営会議アジェンダへ登録できます。
+4. **🔐 エンタープライズ認証・セッションハイジャック検知・無操作タイムアウト**
+   - Google OAuth 2.0 および WebAuthn（Passkey / 生体認証）による 2 段階認証、IP/User-Agent 変化によるセッションハイジャック検知、30分無操作による ZTA 自動セッション失効を搭載しています。
 
 ---
 
-### Pattern B: AWS EC2 (x86_64 AMD/Intel) 1台構成 (CloudFormation)
-最小限のコストでインターネット上に安全な本番環境を公開・運用する推奨構成です。
-情報漏洩防止および Google OAuth / ZTA 規定に準拠するため、アクティベーション（初期設定）には **HTTPS 通信が必須** となっています。また、EC2の再作成時にもデータを失わないよう、**データベース（SQLite）は分離された専用のEBSボリューム**に保存されます。
+## 2. ウィジェット単位での段階的な機能拡張アーキテクチャ
 
-以下の2つのテンプレートを用途に合わせて使い分けます。
+EA-Core は、最初は最小限のシンプルな構成（**基本 4 ウィジェット**）からスタートし、組織の習熟度や用途に合わせて **後からウィジェットごとにプラグイン形式で機能拡張（アドオン追加）** できるモジュラー設計（`Widget Registry & Capability Bus`）を採用しています。
 
-| テンプレートファイル | HTTPS対応 | 特徴と推奨ユースケース |
-| :--- | :--- | :--- |
-| **`cloudformation-cloudfront-ec2.yaml`** (推奨) | ◯ (必須) | **一般ユーザー・本番推奨**。AWS が提供する `https://xxxx.cloudfront.net` で即座に HTTPS 通信・アクティベーションが可能。通信は暗号化され、セキュアに利用できます。 |
-| **`cloudformation-ec2.yaml`** (非推奨) | ✕ (HTTPのみ) | **開発者・社内検証専用**。アクティベーション機能は HTTP ではブロックされるため、ソースコードを自己改変してテストするエンジニア以外は使用しないでください。 |
-
-#### 🚀 デプロイ手順 (AWS マネジメントコンソール)
-
-1. AWSコンソールにログインし、**CloudFormation** の画面を開きます。
-2. **「スタックの作成」** ＞ 「新しいリソースを使用（標準）」をクリックします。
-3. **「テンプレートファイルのアップロード」** を選び、本リポジトリ内の `cloudformation-cloudfront-ec2.yaml` をアップロードします。
-4. パラメータを入力します：
-   - `InstanceType`: `t3.small` などを推奨（無料枠の場合は `t3.micro`）
-   - `DataVolumeSize`: データベース保存用の外付けEBS容量（デフォルト 10GB）
-5. デプロイ（作成）を実行し、完了まで待機します。
-6. スタックの「出力」タブに表示される `CloudFrontURL` (例: `https://d123456.cloudfront.net`) にアクセスし、アクティベーション画面から初期設定を行います。
-
-> [!TIP]
-> **データ保護（EBS分離）アーキテクチャについて**
-> このCloudFormationで作成される `MacOSUI-Data-Volume` (EBS) には削除保護（`DeletionPolicy: Retain`）がかかっています。EC2インスタンスを再作成・終了してもデータはAWS上に安全に残り続けます。
-
----
-
-### Pattern C: さくらのVPS / 一般 VPS 構成 (Ansible 自動構築)
-AWS 以外の VPS（さくらのVPS, ConoHa, Linode 等の Debian/Ubuntu サーバー）上で運用する場合の自動構築構成です。
-
-1. **Ansible インベントリの設定 (`ansible/inventory.ini`)**:
-   対象サーバーの IP アドレスと SSH 接続ユーザーを設定します：
-   ```ini
-   [staging]
-   133.xxx.xxx.xxx
-
-   [staging:vars]
-   ansible_user=debian
-   ansible_ssh_private_key_file=~/.ssh/id_ed25519_vps
-   ```
-2. **Ansible Playbook の実行**:
-   ```bash
-   ansible-playbook -i ansible/inventory.ini ansible/setup-vps.yml
-   ```
-   > ※ Docker、Docker Compose、ファイアウォール（UFW: 22, 80, 443）が完全自動で構築されます。
-3. **コンテナ起動**:
-   対象 VPS にログインし、`docker compose up -d --build` を実行します。
-
----
-
-## 🌐 AWS からローカル Gemma 4 を利用するハイブリッド接続ガイド (AWS Client VPN / エンタープライズ標準)
-
-社外に送信できない極秘文書や、手元の Mac (Apple Silicon) 上で稼働している **Gemma 4 (Ollama / MLX)** を、AWS 上の MacOSUI から安全に利用するための手順です。
-外部 SaaS を一切介さず、**AWS 公式の「AWS Client VPN」** を用いて AWS VPC と社内 Mac を相互 TLS 認証（ACM）による完全閉域網で直結します。
-
-### ステップ 1: 相互 TLS 証明書の生成とお手元 Mac での準備
-手元の Mac のターミナルで標準の `openssl` コマンドを実行し、VPN 接続用の相互 TLS 証明書（CA・サーバー・クライアント）を一括生成します：
-
-```bash
-# 1. 証明書出力ディレクトリの作成
-mkdir -p ~/aws-vpn-certs && cd ~/aws-vpn-certs
-
-# 2. 認証局 (CA) の作成
-openssl genrsa -out ca.key 2048
-openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt -subj "/CN=AWS-VPN-CA"
-
-# 3. サーバー証明書の作成
-openssl genrsa -out server.key 2048
-openssl req -new -key server.key -out server.csr -subj "/CN=server"
-openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 3650 -sha256
-
-# 4. クライアント (Mac用) 証明書の作成
-openssl genrsa -out client1.domain.tld.key 2048
-openssl req -new -key client1.domain.tld.key -out client1.domain.tld.csr -subj "/CN=client1.domain.tld"
-openssl x509 -req -in client1.domain.tld.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client1.domain.tld.crt -days 3650 -sha256
-```
-
-### ステップ 2: AWS Certificate Manager (ACM) への証明書インポート
-AWS CLI または AWS マネジメントコンソールで、サーバー証明書とクライアント証明書を ACM にインポートします：
-
-```bash
-# サーバー証明書のインポート
-aws acm import-certificate \
-  --certificate fileb://~/aws-vpn-certs/server.crt \
-  --private-key fileb://~/aws-vpn-certs/server.key \
-  --certificate-chain fileb://~/aws-vpn-certs/ca.crt \
-  --region ap-northeast-1
-
-# クライアント証明書のインポート
-aws acm import-certificate \
-  --certificate fileb://~/aws-vpn-certs/client1.domain.tld.crt \
-  --private-key fileb://~/aws-vpn-certs/client1.domain.tld.key \
-  --certificate-chain fileb://~/aws-vpn-certs/ca.crt \
-  --region ap-northeast-1
-```
-
-### ステップ 3: AWS Client VPN エンドポイントの作成
-1. **AWS コンソール ＞ VPC ＞ Client VPN エンドポイント** を開きます。
-2. **「Client VPN エンドポイントを作成」** をクリック：
-   - **クライアント IPv4 CIDR**: `10.100.0.0/22`（VPC と重複しない CIDR）
-   - **サーバー証明書 ARN**: 上記でインポートしたサーバー証明書を選択
-   - **認証オプション**: 「相互認証を使用」➔ クライアント証明書 ARN を選択
-   - **接続ログ**: 無効（または CloudWatch Logs を指定）
-   - **VPC ID**: EC2 が存在する VPC を選択
-3. 作成後、**「ターゲットネットワークの関連付け」** で EC2 のサブネットを関連付けます。
-4. **「認証ルール」** で `0.0.0.0/0`（または VPC CIDR）へのアクセスを「すべてのユーザーに許可」します。
-5. **「クライアント設定をダウンロード」** から `.ovpn` ファイルを取得します。
-
-### ステップ 4: Mac 側で AWS VPN Client から接続
-1. 公式の **[AWS Client VPN アプリ (macOS版)](https://aws.amazon.com/vpn/client-vpn-download/)** をダウンロード・インストールします。
-2. ダウンロードした `.ovpn` ファイルの末尾に、Mac のクライアント証明書と秘密鍵を埋め込みます：
-   ```text
-   <cert>
-   （~/aws-vpn-certs/client1.domain.tld.crt の中身）
-   </cert>
-   <key>
-   （~/aws-vpn-certs/client1.domain.tld.key の中身）
-   </key>
-   ```
-3. AWS VPN Client アプリでプロファイルを追加し、**「接続」** をクリックします。
-4. これでお手元の Mac が AWS VPC 内の IP（例: `10.100.0.x`）を取得し、完全な閉域網で直結されます！
-
-### ステップ 5: Ollama の起動と MacOSUI での接続設定
-1. **Mac 側で Gemma 4 を起動**:
-   ```bash
-   OLLAMA_HOST=0.0.0.0:11434 ollama run gemma4:26b-mlx
-   ```
-2. **MacOSUI 画面での設定**:
-   - ブラウザで AWS 上の MacOSUI（CloudFront または ALB）にアクセス。
-   - **System Settings ＞ System タブ** を開く。
-   - **Local AI Host URL** に `http://10.100.0.x:11434`（MacのVPN接続IP）を指定して保存。
-   - チャット画面で **`🛡️ Gemma 4 Local RAG`** を選択すれば、社内文書が一切クラウドに出ることなく安全に推論されます！
-
----
-
-## 🔄 既存環境のデータ完全保持・安全なアップグレード手順 (CI/CD)
-
-MacOSUI では、ユーザーデータ・ナレッジ・暗号化キーが永続ボリューム（`./data`）に完全分離されているため、**再アクティベーションや過去データの消失なしに、プログラム（コンテナ）だけを安全にアップグレード** できます。
-
-### 方法 1: GitHub Actions による全自動 CI/CD デプロイ (推奨)
-本リポジトリを Fork して運用する場合、GitHub Actions を使って `git push`（または画面上の「Run workflow」ボタン）一発で本番 EC2 が自動バックアップ＆安全に更新されます。
-
-#### 🔑 GitHub Secrets の事前設定手順（初回のみ・1分で完了）
-
-1. **EC2 側でワンライナーを実行（鍵ペアの生成と登録）**:
-   AWS マネジメントコンソール（または CloudShell）から対象 EC2 に接続し、以下を実行します：
-   ```bash
-   ssh-keygen -t ed25519 -f ~/.ssh/github_actions_ec2 -N ""
-   cat ~/.ssh/github_actions_ec2.pub >> ~/.ssh/authorized_keys
-   chmod 600 ~/.ssh/authorized_keys
-
-   # 画面に表示された秘密鍵をコピー
-   cat ~/.ssh/github_actions_ec2
-   ```
-
-2. **GitHub リポジトリに Secrets を登録**:
-   リポジトリの **Settings ＞ Secrets and variables ＞ Actions** を開き、**「New repository secret」** から以下の **3つ** を登録します：
-
-   | Secret 名 | 設定する値 |
-   | :--- | :--- |
-   | **`EC2_HOST_IP`** | 対象 EC2 インスタンスのパブリック IPv4 アドレス（例: `35.75.2.250`） |
-   | **`EC2_USER`** | `ec2-user` |
-   | **`EC2_SSH_PRIVATE_KEY`** | 上記ステップ1で出力された秘密鍵の全文（`-----BEGIN...` から `-----END...` まで） |
-
-3. **自動デプロイの実行**:
-   - `main` ブランチに Push するか、GitHub の **「Actions」 ＞ 「Multi-Environment Deploy」 ＞ 「Run workflow」** から `aws-ec2` を選択して実行します。
-   - 既存データベースの自動バックアップ ➔ 最新コンテナの再ビルド ➔ 無停止更新が全自動で完了します。
-
-### 方法 2: EC2 サーバー内での手動安全アップグレード (ワンライナー)
-サーバーに SSH 接続して手動でアップグレードする場合も、データは 100% 安全に引き継がれます：
-```bash
-cd ~/MacOSUI
-
-# 1. 最新バージョンのコードを取得
-git fetch --tags
-git checkout v2.5.0
-
-# 2. 既存の DB や設定データを保持したまま、Web コンテナだけを再ビルド・再起動
-docker compose up -d --build --force-recreate --no-deps web
-```
-> ※ 再起動後、ブラウザをリロードするだけで再アクティベーション不要でそのまま v2.5.0 を利用可能です。
-
----
-
-## 🚑 トラブルシューティングガイド
-
-EC2 やローカル環境でサイトにアクセスできない場合の解決手順です。
-
-### 1. サーバー上のコンテナ稼働状況を確認
-EC2 インスタンスに SSH 接続（またはローカルターミナル）でログインし、コンテナの状態を確認します：
-```bash
-docker ps
-```
-- `macosui-web` コンテナが `Up`（起動中）になっているか確認します。
-- もし `Restarting` や停止している場合は、以下のコマンドでログを確認します：
-```bash
-docker logs --tail 100 macosui-web
-```
-
-### 2. ポート 8080 のセキュリティグループ確認
-ブラウザで `http://<EC2-PUBLIC-IP>:8080` にアクセスできない場合、AWS セキュリティグループでポート `8080` が許可されているか確認してください。
-
----
-
-## ⚙️ 事前準備とアクティベーション
-
-初回起動時には **MacOSUI アクティベーション** 画面が表示されます。手動で `.env` ファイルを設定する必要はありませんが、以下の API 設定が **必須** となります。
-
-### 1. Google Cloud コンソールの設定と必須 API の有効化
-
-MacOSUI の機能（カレンダー連携・RAGナレッジ検索・DeepResearchのレポート保存など）を正しく動作させるため、Google Cloud Console で以下の **2つの API の有効化** および **OAuth 設定** が必須となります。
-
-> [!IMPORTANT]
-> **必須 API の有効化 (未有効化の場合、503 / 403 `PERMISSION_DENIED` エラーになります)**
-> Google Cloud Console にアクセスし、プロジェクトを選択の上、以下の API を有効化してください：
-> 1. **Google Drive API**: [Google Drive API 有効化ページ](https://console.developers.google.com/apis/api/drive.googleapis.com/overview)
->    - *用途*: RAG (File Search) のファイル同期、DeepResearch レポートの Google Drive 自動保存
-> 2. **Google Calendar API**: [Google Calendar API 有効化ページ](https://console.developers.google.com/apis/api/calendar.googleapis.com/overview)
->    - *用途*: カレンダーウィジェットおよびバーチャルオフィスの予定同期・調整
-> 3. **OAuth 2.0 クライアント ID**: Google ログイン認証用 (ウェブアプリケーションタイプ)
-
-> [!IMPORTANT]
-> **「テストユーザー」の追加について (Google Cloud Consoleの仕様)**
-> 新規作成したOAuth同意画面は初期状態で「テスト中 (Testing)」となります。テスト中のアプリには、あらかじめ登録した「テストユーザー」しかログインできません（403 `access_denied` エラーになります）。以下の手順でご自身のアカウントを追加してください：
-> 1. Google Cloud Console で対象プロジェクトを開く。
-> 2. 左側のメニューから **「API とサービス」 ＞ 「OAuth 同意画面」** をクリック。
-> 3. 左のメニューから **「対象 (Audience)」** タブを選択。
-> 4. 画面を下へスクロールし **「テストユーザー (Test users)」** セクションを見つける。
-> 5. **「+ ユーザーを追加 (ADD USERS)」** を押し、ログインさせたい `@gmail.com` 等のメールアドレスを追加して保存。
-
-### 2. アクティベーション手順
-ブラウザで `http://<あなたのサーバーIP>:8080` または `http://localhost:8080` にアクセスし、画面の指示に従って Google OAuth Client ID/Secret および Gemini API キーを入力してアクティベートします。
-
----
-
-## 🔬 Deep Research ワークフロー初期設定とシステムプロンプト
-
-MacOSUI には、自律型リサーチとナレッジ生成を自動実行する **Deep Research エンジン** が標準搭載されています。
-データベース（SQLite / PostgreSQL）の初回初期化時に以下の **完全なシステムプロンプトとワークフロー定義が自動登録** されるため、手動設定なしですぐに高品質なリサーチを実行できます。
-
-### 1. 自動登録されるデフォルトワークフローとプロンプト
-
-| ワークフロー名 | 出力タイプ | 推奨モデル | 役割と動作 |
+| 区分 | ウィジェット名 | パッケージ ID | 概要・拡張時の連携動作 |
 | :--- | :--- | :--- | :--- |
-| **HTML/SVGナレッジ生成** (デフォルト) | `HTML/SVG` | **Gemini 3.6 Flash / Flash Lite** | リサーチ結果を Tailwind CSS / SVG を用いたインタラクティブな単一 Web ドキュメントとして自動生成し、Google Drive に保存 |
-| **インフォグラフィック画像生成** | `Infographic` | **Gemini 3.1 Pro** | リサーチ結果の主要ポイントを整理したプロフェッショナルな画像アセット（インフォグラフィック）を出力し、Google Drive に保存 |
-
-#### 📝 Step 1: リサーチ部 (Research Agent) の標準システムプロンプト
-```text
-あなたは世界最高峰のリサーチャーです。提出された社内資料（RAGファイル）と、最新のWeb検索結果（Google Search）の両方を駆使して、包括的でインサイトに富んだ長文の調査レポートを作成してください。必要に応じて、検索した結果や考察を整理し、Markdownフォーマットで見やすく構造化すること。
-
-【重要事項】ユーザーから「ファイルに保存して」と頼まれても、あなたが直接ファイル操作やダウンロードリンクの生成をする必要はありません。あなたがチャットに出力したMarkdownのテキストは、システム側で自動的にGoogle Driveへファイルとして保存・エクスポートされる仕組みが備わっています。そのため、「ファイルとして保存できませんのでコピーしてください」などの謝罪や案案内は一切書かずに、ただ自信を持ってMarkdownレポートの本文のみを堂々と出力してください。
-```
-
-#### 🎨 Step 2: HTML/SVG 生成部 (Frontend Agent) の標準プロンプト
-```text
-以下のリサーチ記事内容と含まれるデータを分析し、**1つの完全なHTMLファイル**を作成してください。
-Tailwind CSSのCDNを利用してモダンなデザインにし、純粋なHTML文字列のみを返してください。
-
-=== テーマ: {{title}} ===
-
-{{report}}
-```
-
-#### 🖼️ Step 2: インフォグラフィック生成部 (Infographic Agent) の標準プロンプト
-```text
-以下のレポート内容を完璧に表現した、プロフェッショナルなインフォグラフィックを1枚生成してください。
-
-=== レポート内容 ===
-
-{{report}}
-```
-
-### 2. Google Drive 保存先フォルダとモデルの設定方法
-
-リサーチ結果や生成された HTML / 画像を Google Drive に自動保存したい場合は、以下の手順で保存先フォルダを設定します：
-
-1. **Google Drive 側の準備**:
-   - ご自身の Google Drive で保存用フォルダ（例: `MacOSUI_Research`）を新規作成します。
-   - ブラウザのアドレスバーの URL（`https://drive.google.com/drive/folders/【この部分の英数字】`）から **フォルダID** をコピーします。
-2. **MacOSUI 画面での設定**:
-   - 画面左上の Apple メニュー（または Dock）から **「System Settings」 ＞ 「Deep Research」タブ** を開きます。
-   - **Google Drive 保存先 Folder ID** にコピーしたフォルダIDを貼り付けて保存します。
-   - **モデルの選択**:
-     - 基本チャット・RAG: **Gemini 3.6 Flash** (低コスト・高速)
-     - リサーチ推論・画像生成: **Gemini 3.1 Pro** または **Gemini 3.6 Flash**
-
----
-
-## 📊 AI Analytics & Pod ナレッジ共有・アクセス制御ガイド (v2.6.0 新機能)
-
-MacOSUI v2.6.0 では、MCP 経由で取得した大規模データと生成 AI を組み合わせた動的ダッシュボード（**AI Analytics**）の作成、ナレッジベース保存、および組織内でのセキュアな **Pod 共有** に対応しました。
-
-### 1. AI Analytics（MCP × GenUI）とワンクリック保存
-- チャット画面（`McpChat` / `Gemini`）で MCP ツールを用いてデータを取得・集計し、Tailwind CSS や Chart.js を用いたリッチなダッシュボードを自動生成できます。
-- 生成されたダッシュボードのヘッダー右上にある **[📚 ナレッジに保存]** ボタンをクリックするだけで、タイトルや保存先 Pod、タグを指定して即座にナレッジベースへ蓄積できます。
-
-### 2. ナレッジベース画面での「動的プレビュー（安全な iframe サンドボックス）」
-- ナレッジベース（`KnowledgeBase`）で記事を選択すると、保存された動的ダッシュボードが **安全な iframe サンドボックス** 内でそのまま動的にレンダリングされます。
-- Chart.js によるグラフ描画はもちろん、**棒グラフクリックによる詳細カードの更新や動的フィルタリングなど、JavaScript の双方向インタラクションが 100% 稼働** します。
-- `[🖥️ インタラクティブ (GenUI)]` と `[📝 ソース / Markdown]` の切り替え、`[↗️ 別タブで開く]`、`[🗖 全幅表示]` ツールバーを完備しています。
-
----
-
-### 👥 Pod とロールを使ったナレッジの「限定公開」方法
-
-社内の特定部署（例: 経営企画、人事、営業、デジ庁プロジェクトチーム）専用のナレッジ空間を作り、関係者のみに閲覧を限定する（Zero Trust / PDP・PEP 準拠）設定手順です。
-
-```mermaid
-graph TD
-    subgraph Users["ユーザー / 所属"]
-        UserA["👤 経営企画メンバー<br>(Role: executive)"]
-        UserB["👤 一般社員<br>(Role: general)"]
-    end
-
-    subgraph PDP["認可ポリシー (PDP: RBAC_POLICIES)"]
-        PolicyExec["Role: executive<br>allowed_pods: ['pod-management', 'public']"]
-        PolicyGeneral["Role: general<br>allowed_pods: ['public']"]
-    end
-
-    subgraph Pods["ナレッジベース (Pods)"]
-        PublicPod["🌐 共通 (パブリック)<br>全社員が閲覧可能"]
-        ExecPod["📦 経営企画限定 Pod<br>役員・企画部のみアクセス可能"]
-    end
-
-    UserA --> PolicyExec
-    UserB --> PolicyGeneral
-
-    PolicyExec -->|アクセス許可| PublicPod
-    PolicyExec -->|アクセス許可| ExecPod
-    PolicyGeneral -->|アクセス許可| PublicPod
-    PolicyGeneral -.->|アクセス拒否 403| ExecPod
-```
-
-#### 🌐 パブリック公開 vs 📦 Pod 限定公開
-- **🌐 共通（パブリック）**: 全社員・全ログインユーザーが閲覧可能な共有ナレッジ。社内ポータルや共通マニュアル向け。
-- **📦 特定 Pod（限定公開）**: その Pod ID が許可されているロールのメンバーのみが一覧表示・プレビューできる隔離された空間。
-
-#### 🛠️ 限定公開の設定ステップ (4ステップ)
-
-1. **Pod の作成**:
-   - ナレッジベース画面の Pod 一覧、またはデータベース（`db_sqlite.cjs` / `db_postgres.cjs`）に新しい Pod を登録します。
-   ```sql
-   INSERT INTO pods (id, name, description) VALUES ('pod-management', '経営企画部限定', '役員および企画メンバー専用の分析ナレッジ空間');
-   ```
-2. **ロールポリシー（`RBAC_POLICIES`）での Pod アクセス許可**:
-   - システム設定のロール管理画面（または DB 設定）で、対象ロール（例: `executive`）の `allowed_pods` に上記 Pod ID を追加します。
-   - 一般社員ロール（`general`）の `allowed_pods` に該当 Pod が含まれていなければ、一覧取得 API（`GET /api/knowledge`）および詳細取得 API（`GET /api/knowledge/:id`）で厳格に認可評価（PEP）され、データは返却されません。
-3. **対象ユーザーへのロール割り当て**:
-   - テナント管理画面（ユーザー管理）から、対象メンバーに `executive` ロールを付与します。
-4. **ダッシュボード・記事の Pod 紐付け保存**:
-   - チャットで [📚 ナレッジに保存] をクリックした際、保存先ドロップダウンで「📦 経営企画部限定」を選択して保存します。
-   - これにより、該当ロールを持つメンバーのみが「**AI トークン消費ゼロ・待ち時間ゼロ（瞬時表示）**」で動的ダッシュボードを安全に閲覧・活用できます！
-
----
-
-### 🛡️ ロールベースアクセス制御 (RBAC) と「Data Analyst」権限設計サンプル
-
-MacOSUI では、Zero Trust Architecture (ZTA) に基づくポリシー決定ポイント (PDP) およびポリシー施行ポイント (PEP) アーキテクチャを採用しており、ユーザーのロールごとに利用可能なウィジェット、モデル、アクション、および Pod へのアクセス権限を一元的に動的評価します。
-
-#### 1. 各権限設定パラメータの役割
-
-| パラメータ | 説明と役割 | 指定例 |
-| :--- | :--- | :--- |
-| **`allowed_widgets`** | ユーザーが起動・利用できるアプリケーションの一覧。MCP チャット（`app:mcp-chat`）やナレッジベース（`app:knowledge-base`）などを指定します。 | `["app:mcp-chat", "app:knowledge-base", ...]` |
-| **`allowed_actions`** | 実行可能な高度なアクション。MCP ツールの動的呼び出しには **`action:use_mcp_tools`** が必須です。 | `["action:use_mcp_tools"]` |
-| **`allowed_models`** | チャットやリサーチで使用できる LLM モデルのホワイトリスト。`["*"]` で全モデル、または特定モデル（`["model:gemini-flash"]` 等）を指定します。 | `["*"]` |
-| **`allowed_pods`** | **【最重要】アクセスおよびナレッジ保存先として選択可能な Pod の一覧**。`["*"]` で全 Pod を許可、または特定 Pod ID（例: `["pod-digital-agency", "pod-npb-analytics"]`）を指定します。※ これが未設定または空の場合、ナレッジ保存モーダルの Pod 選択ドロップダウンに表示されず保存できません。 | `["*"]` または `["pod-xxx", "pod-yyy"]` |
-
-#### 2. 「Data Analyst (データアナリスト)」推奨ロール定義サンプル
-
-データ分析官やアナリストが、MCP ツールによる大規模データ集計、GenUI 動的ダッシュボード生成、および Pod への分析ナレッジ蓄積を完全に行うための推奨設定例です：
-
-```json
-{
-  "data_analyst": {
-    "name": "Data Analyst",
-    "allowed_widgets": [
-      "app:mcp-chat",
-      "app:knowledge-base",
-      "app:gemini",
-      "app:html-editor",
-      "app:finder",
-      "app:stickies",
-      "app:notes",
-      "app:calendar",
-      "app:calculator",
-      "app:browser",
-      "app:virtual-office",
-      "app:dm-chat"
-    ],
-    "allowed_models": [
-      "*"
-    ],
-    "allowed_actions": [
-      "action:use_mcp_tools"
-    ],
-    "allowed_pods": [
-      "*"
-    ]
-  }
-}
-```
+| **基本パック標準搭載 (Core 4)** | **💬 ノーマルチャット** | `com.techies.widget.normal-chat` | 日常の対話・壁打ち用 AI チャット。ナレッジベースと自動連携し社内規定・過去レポートを参照（RAG）可能。 |
+| **基本パック標準搭載 (Core 4)** | **🔌 MCP クライアント** | `com.techies.widget.mcp-client` | ZTA ゲートウェイ経由で社内 DB・業務 MCP を分析し、GenUI ダッシュボードを生成。 |
+| **基本パック標準搭載 (Core 4)** | **📚 ナレッジ＆RAG** | `com.techies.widget.knowledge-rag` | 分析結果や社内ドキュメントを蓄積。トークン消費量や著者別投稿数のクロス集計 MCP ツールも内蔵。 |
+| **基本パック標準搭載 (Core 4)** | **🏛️ 経営会議ブリーフィング** | `com.techies.widget.meeting-briefing` | MCP や Deep Research で作成した HTML ダッシュボードを会議アジェンダとして登録・プレゼン表示。 |
+| **拡張ウィジェット (Add-on)** | **🔬 Deep Research** | `com.techies.widget.deep-research` | Web 最新検索と社内 RAG を融合した長文調査レポート＋インフォグラフィック＋HTML 自動生成ワークフロー。 |
+| **拡張ウィジェット (Add-on)** | **🏢 バーチャルオフィス** | `com.techies.widget.virtual-office` | 社員のリアルタイム在席状況（Focus / Meeting / Remote / Offline）と不在時 AI 秘書による日程調整。 |
+| **拡張ウィジェット (Add-on)** | **📅 カレンダー / 🌐 ブラウザ / 📝 付箋 / 🧮 電卓** | `com.techies.widget.*` | System Settings の「🧩 ウィジェット管理 (Widget Store)」からワンクリックで有効化・無効化が可能。 |
 
 > [!TIP]
-> **設定手順**:
-> 1. 管理者（Admin）アカウントでログインし、**「System Settings」 ＞ 「ロール管理 (RBAC Policies)」** を開きます。
-> 2. `data_analyst` の設定で上記のように `allowed_pods` に `["*"]`（または許可したい Pod ID）が含まれていることを確認・保存します。
-> 3. テナント管理画面（ユーザー一覧）で対象ユーザーのロールに `data_analyst` を割り当てます。
+> 独自の社内業務ウィジェットを追加したい場合も、[server/services/widgetRegistryService.cjs](./server/services/widgetRegistryService.cjs) のマニフェスト定義と RBAC ポリシー（PDP）に従うだけで、ハードコードなしに Dock・権限管理画面・AI モデルルーティングへ自動統合されます。
 
 ---
 
-### 🏛️ デジタル庁 行政手続分析 MCP ＆ ZTA MCP Gateway v1.1.1 連携手順
+## 3. 同梱 MCP サンプルデータ（NPB プロ野球 & デジタル庁 行政手続データ）
 
-全国 76,827 手続の棚卸調査データ（オンライン化率、年間申請件数、ライフイベント分類、手数料、根拠法令等）を AI が分析し、行政改革ダッシュボードを自律生成するための環境構築手順です。
+Fork / Clone した直後から MCP による高度なデータ分析・GenUI ダッシュボード生成・SQL 監査ログを試せるよう、以下の **2つの実用サンプル MCP データセット** が標準同梱されています。
+
+### ① ⚾ NPB プロ野球公式戦データベース（2024〜2026年 マルチ年度データ / MariaDB）
+- **収録テーブル**:
+  - `players`（選手マスタ: 70名）
+  - `teams`（セ・パ12球団マスタ）
+  - `team_standings`（2024・2025・2026年 シーズン確定順位表: 36レコード）
+  - `batting_stats`（2024〜2026年 主力野手成績・WAR/WAA・OPS・タイトル表彰: 45レコード）
+  - `pitching_stats`（2024〜2026年 主力投手成績・防御率・WHIP・K数・タイトル表彰: 33レコード）
+  - `games`（日本シリーズ・CSファイナル・交流戦等の直接対決スコア＆責任投手履歴: 16レコード）
+- **試せる定型プロンプト例（MCP クライアント画面にプリセット済）**:
+  - *「2025年阪神タイガース優勝の立役者（2024 vs 2025 投打総合・戦力進化ダッシュボード）」*
+  - *「2026年日本シリーズ（ソフトバンク vs DeNA）戦力徹底比較」*
+
+### ② 🏛️ デジタル庁 行政手続等の棚卸調査データ（令和6・7年度 約7.6万件）
+- **概要**: 全国38府省庁・約76,275件の行政手続に関するオンライン化実施状況、年間手続件数、国民のライフイベント（死亡・相続、引越し、出生等）別分類、および紙原本（戸籍・住民票・印鑑証明等）の添付義務状況を高速集計（Polars エンジン）する MCP サーバーです。
+- **試せる定型プロンプト例**:
+  - *「行政手続・ライフイベント別デジタル化＆行政改革ダッシュボード」*
+  - *「紙原本（戸籍・住民票）添付義務の手続き分析」*
+
+---
+
+## 4. システム要件と MariaDB について
+
+### 必須ソフトウェア要件
+- **Docker Engine** (v24.0 以上) & **Docker Compose** (v2.20 以上)
+- **MariaDB 10.11 以上**
+  - **NPB サンプルデータおよび SQL ファイアウォール検証には MariaDB が必要です。**
+  - 本リポジトリのフルスタック構成（[`docker-compose.full.yml`](./docker-compose.full.yml) または [`zta-mcp-stack/docker-compose.sample.yml`](./zta-mcp-stack/docker-compose.sample.yml)）を使用すると、**公式 `mariadb:10.11` コンテナが自動起動し、初期データ（[`scripts/setup_npb_data.sql`](./scripts/setup_npb_data.sql)）も自動投入される**ため、ホスト OS 側へ個別に MariaDB をインストールする必要はありません。
+  - 既存の社内 MariaDB / MySQL サーバーに接続したい場合は、`zta-mcp-stack/docker-compose.sample.yml` の `mariadb-mcp` 環境変数（`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`）を変更するだけで接続先を切り替えられます。
+
+### 事前準備する API キー / クレデンシャル
+1. **Google Cloud OAuth 2.0 クライアント ID & シークレット**（初回 Activation 画面で登録します）
+   - Google Cloud Console の「承認済みの JavaScript 生成元」に `http://localhost:8080`（本番・VPS の場合は `https://あなたのドメイン`）を追加してください。
+2. **Gemini API Key**（Google AI Studio）または **Claude API Key**（Anthropic Console）
+   - Activation 完了後、画面内の「System Settings」から GUI で安全に暗号化保存できます（コードや Git に API キーを含める必要はありません）。
+
+---
+
+## 5. ローカル PC で Fork / Clone してテストする方法（クイックスタート）
+
+Mac / Windows (WSL2) / Linux のローカル PC 上で、**EA-Core + ZTA-MCP-Gateway + MariaDB (NPB) + デジタル庁 MCP** のフルスタック環境を 1 コマンドで起動できます。
+
+### Step 1: リポジトリの Fork & Clone
+GitHub 上で本リポジトリを **Fork** し、ローカル PC に Clone します。
+
+```bash
+git clone https://github.com/<あなたのGitHubアカウント>/EmployeeAgent-Core.git
+cd EmployeeAgent-Core
+```
+
+### Step 2: フルスタック起動スクリプトの実行
+以下のスクリプトを実行すると、暗号化キー（`server/development.env`）の自動生成、全 5 コンテナのビルド・起動、および MariaDB への NPB データ投入までが自動で行われます。
+
+```bash
+bash scripts/start-local.sh
+```
+
+> **補足**: ZTA-MCP-Gateway や MariaDB を含めず、EA-Core 本体のみを単体起動したい場合は `bash scripts/start-local.sh --core-only` を実行してください。
+
+### Step 3: 動作確認URL
+起動完了後、以下の URL にアクセスできます。
+
+| サービス | ローカル URL | 説明 |
+| :--- | :--- | :--- |
+| **EA-Core デスクトップ画面** | http://localhost:8080 | ブラウザで開くと初回 Activation 画面が表示されます |
+| **EA-Core ヘルスチェック** | http://localhost:8080/api/health | `{"status":"ok","message":"Server is running"}` |
+| **ZTA-MCP-Gateway ヘルスチェック** | http://localhost:8085/healthz | `{"status":"healthy","version":"1.0"}` |
+| **MariaDB (NPB DB)** | `localhost:3306` | DB名: `testdb` / User: `testuser` / Pass: `testpassword` |
+
+---
+
+## 6. さくらインターネット VPS へのデプロイ手順
+
+さくらインターネットの VPS（Debian / Ubuntu 推奨、メモリ 2GB 以上）へ、ローカル PC からセキュアにフルスタック一括デプロイするスクリプト（[`scripts/deploy-staging.sh`](./scripts/deploy-staging.sh)）を用意しています。
+
+### Step 1: さくら VPS 側の初期セットアップ（初回のみ）
+1. お名前.com 等の DNS で、ドメイン（例: `ea-demo.example.com`）の A レコードをさくら VPS の IP アドレスに向けます。
+2. さくら VPS のパケットフィルターで **SSH (22)**、**HTTP (80)**、**HTTPS (443)** を開放します。
+3. VPS 上に Docker & Docker Compose をインストールし、Let's Encrypt 証明書を配置します（[`scripts/setup-vps.sh`](./scripts/setup-vps.sh) および [`scripts/get-letsencrypt.sh`](./scripts/get-letsencrypt.sh) が利用可能です）。
+
+### Step 2: ローカル PC から 1 コマンドデプロイ実行
+ローカル PC 上で、接続先ホスト名・ユーザー名・SSH 秘密鍵パスを指定して [`scripts/deploy-staging.sh`](./scripts/deploy-staging.sh) を実行します。
+
+```bash
+STAGING_VPS_HOST=" your-domain.example.com " \
+STAGING_VPS_USER="debian" \
+STAGING_SSH_KEY="$HOME/.ssh/id_ed25519_vps" \
+bash scripts/deploy-staging.sh
+```
+
+#### このスクリプトが自動実行する処理（Built-in Quality パイプライン）
+1. **脆弱性診断**: `npm audit --audit-level=critical` および `docker scout cves` で CRITICAL 脆弱性が 0 件であることを検証。
+2. **マルチアーキテクチャビルド (`linux/amd64`)**: Apple Silicon (M1/M2/M3/M4) Mac からでも x86_64 のさくら VPS 用イメージ（`EA-Core`, `ZTA-MCP-Gateway`, `MariaDB-MCP`, `Admin-Procedures-MCP`）を高速ビルドして圧縮転送。
+3. **MariaDB 自動起動 & NPB データ投入**: VPS 上で `test_mariadb` コンテナを起動し、2024〜2026 NPB 公式戦データを自動投入。
+4. **永続 DB の自動バックアップ & コンテナ更新**: 既存の `database.sqlite` がある場合は自動で世代バックアップを取得した上で Web & Nginx コンテナを再起動。
+
+---
+
+## 7. AWS (EC2) へのデプロイ手順
+
+AWS EC2（Amazon Linux 2023 または Ubuntu 22.04/24.04、EBS 永続ボリューム `/app/data` マウント構成推奨）向けのデプロイ＆アップデートスクリプト（[`scripts/deploy-ec2.sh`](./scripts/deploy-ec2.sh)）を用意しています。
+
+### Step 1: EC2 インスタンスの準備（初回のみ）
+1. EC2 インスタンスを作成し、セキュリティグループで **80 / 443**（または ALB 経由で **8080**）と **22 (SSH)** を許可します。
+2. 永続データ保護用のディレクトリ（推奨: `/app/data`）を作成し、リポジトリを `/opt/macosui/repo` に Clone します。
+
+```bash
+sudo mkdir -p /app/data /opt/macosui
+sudo chown -R $(whoami):$(whoami) /app/data /opt/macosui
+git clone https://github.com/<あなたのGitHubアカウント>/EmployeeAgent-Core.git /opt/macosui/repo
+```
+
+### Step 2: デプロイスクリプトの実行
+EC2 インスタンス上で以下のコマンドを実行すると、`/app/data` のシンボリックリンク保護・暗号化キー自動生成・`EA-Core + ZTA-MCP-Gateway + MariaDB (NPB) + デジタル庁 MCP` の全コンテナ起動と NPB データ投入が完了します。
+
+```bash
+cd /opt/macosui/repo
+bash scripts/deploy-ec2.sh
+```
+
+---
+
+## 8. 初期 Activation（アクティベーション）の仕方とソフトウェアのアップデート（VUP）方法
+
+### 🔑 初回 Activation（システム初期セットアップ）の手順
+新規インストール直後（データベースが空の状態）にブラウザでアクセスすると、自動的に **「System Activation（初期セットアップ）」画面** が表示されます。
+
+1. **Google OAuth クレデンシャルの入力**
+   - 画面の入力欄に Google Cloud Console で発行した **`Google Client ID`** と **`Google Client Secret`** を入力します。
+2. **初期管理者（Admin）アカウントでの Google ログイン**
+   - Google ログインボタンを押して認証すると、**最初にログインしたユーザーが自動的にシステム全体の最高管理者（`admin` ロール）として登録**されます。
+3. **AI API キー（Gemini / Claude）の登録**
+   - デスクトップ画面が開いたら、上部メニューバーまたは Dock から **「⚙️ System Settings」** を開きます。
+   - **「🔑 API & AI モデル設定」** タブで `Gemini API Key`（および必要に応じて `Claude API Key`）を入力して「保存」をクリックします（API キーは `DB_ENCRYPTION_KEY` により AES-256-GCM で暗号化されて DB に保存されます）。
+4. **MCP クライアントでの分析テスト**
+   - Dock の **「🔌 MCP クライアント」** を開き、上部の定型プロンプトボタン（例: `2026年日本シリーズ（ソフトバンクvsDeNA）戦力徹底比較` や `行政手続・ライフイベント別デジタル化ダッシュボード`）をクリックして実行してください。
+   - 実行後、**「⚙️ System Settings」 ➔ 「🛡️ セキュリティ監査ログ」 ➔ 「🌐 ZTA Gateway 監査」** を開くと、あなたのメールアドレス・発行された SQL・参照テーブル・カタログ整合性判定が記録されていることを確認できます。
+
+---
+
+### 🔄 ソフトウェアのアップデート（VUP）方法（Zero Data Loss 原則）
 
 > [!IMPORTANT]
-> **前提条件**: 本機能には **`zta-mcp-gateway v1.1.1` 以上** が必須となります。
+> **一度 Activation を完了した環境では、バージョンアップ（VUP）時に Activation をやり直す必要はありません。**
+> 登録済みのユーザー、暗号化された API キー、ナレッジベース記事、監査ログはすべて SQLite データベース（`data/database.sqlite` または `server/database.sqlite`）に永続化されており、以下の手順でデータを 1 件も失わずに最新コードへアップデートできます。
 
-#### 🚀 起動と利用手順
+#### ローカル PC 環境のアップデート手順
+```bash
+git pull origin main
+bash scripts/start-local.sh
+```
 
-1. **zta-mcp-gateway (v1.1.1) の起動**:
-   ```bash
-   git clone https://github.com/Techies-T/zta-mcp-gateway.git
-   cd zta-mcp-gateway
-   git checkout v1.1.1
-   docker compose up -d --build
-   ```
-   ※ ポート `8085` でゲートウェイが起動し、デジタル庁行政手続データ（`admin-procedures`）が利用可能になります。
+#### さくらインターネット VPS 環境のアップデート手順
+ローカル PC で最新コードを pull（または改修）した後、デプロイスクリプトを再実行するだけです。スクリプト内で自動的にリモート DB の世代バックアップ（`database_backup_YYYYMMDD_HHMMSS.sqlite`）を作成した上でコンテナのみを最新イメージに入れ替えます。
+```bash
+bash scripts/deploy-staging.sh
+```
 
-2. **MacOSUI の起動**:
-   ```bash
-   cd MacOSUI-Community  # または MacOSUI-oss
-   docker compose up -d --build
-   ```
-   ※ 起動時に `http://host.docker.internal:8085/mcp/admin-procedures/sse` へ自動接続され、4つの分析ツールがロードされます。
-
-3. **同梱サンプルの確認と活用**:
-   - ナレッジベースを開き、初期 Pod「**📦 デジ庁データ分析**」を選択すると、同梱されたサンプル記事「**行政手続 ライフイベント別デジタル化＆行政改革ダッシュボード**」を即座に動的プレビューできます。
-   - チャット（`McpChat`）で「引越し・出生関連で年間申請件数が多く、オンライン化が遅れている手続トップ10をダッシュボードにして」とプロンプトを投げるだけで、最新の分析ウィジェットが生成され、ワンクリックで Pod に保存できます。
+#### AWS EC2 環境のアップデート手順
+EC2 上で [`scripts/deploy-ec2.sh`](./scripts/deploy-ec2.sh) を実行すると、`/app/data/database.sqlite` の自動バックアップ取得 ➔ `git pull origin main` ➔ コンテナ再ビルド＆再起動 ➔ 既存ユーザーデータの生存検証までが自動で行われます。
+```bash
+cd /opt/macosui/repo
+bash scripts/deploy-ec2.sh
+```
 
 ---
 
-### 🔐 セキュリティ・通信暗号化 (HTTPS / HTTP) と ZTA 規定
+## 📄 ライセンス・ドキュメント
 
-MacOSUI では、Zero Trust Architecture (ZTA) の原則（「ネットワーク境界を信頼せず、すべての通信を暗号化・検証せよ」）に基づき、以下の通信暗号化方針を定めています：
-
-1. **環境ごとの HTTPS / HTTP 通信規定**:
-   - **AWS EC2 / 本番サーバー構成**: 本番ドメイン運用においては、パブリックネットワーク上での盗聴・中間者攻撃 (MitM) やセッションハイジャックを防ぐため、Nginx + Let's Encrypt や ALB / Cloudflare を前段に配置した HTTPS 暗号化通信を強く推奨します。
-   - **ローカル開発環境 (`localhost` / `127.0.0.1`)**: 手元でのクイックな動作検証のため HTTP (`http://localhost:8080`) での動作を許可しています。
-
-2. **認証クッキー (`Secure` 属性) の動的コントロール**:
-   - セッション認証クッキー (`token`) の `Secure` 属性（HTTPS限定送信フラグ）は、通信プロトコルを動的に判定します。
-   - `HTTPS` 通信時は自動的に `Secure` 属性が有効化され、`HTTP (localhost)` 通信時のみブラウザ側でクッキーが拒否されないよう柔軟にコントロールされるため、開発環境でもセッションが切れずにスムーズに動作します。
-
-3. **データベースの暗号化と自動キー生成 (`DB_ENCRYPTION_KEY`)**:
-   - Gemini API キーや Google OAuth Client Secret などの機密設定値は、データベース（SQLite / PostgreSQL）内で **AES-256-GCM により暗号化** されて保存されます。
-   - 暗号化キー (`DB_ENCRYPTION_KEY`) は、初回起動時にプログラムが全自動で生成し、永続ボリューム (`data/development.env`) に安全に保存するため、ユーザーが手動で暗号キーを発行・管理する手間は一切ありません。
-
----
-
-## 📄 ライセンス
-[Apache License 2.0](LICENSE) - 商用利用、改変、再配布、および個別カスタマイズが自由に行えます。
+- 変更履歴: [CHANGELOG.md](./CHANGELOG.md)
+- ZTA-MCP-Gateway 仕様詳細: [zta-mcp-stack/README.md](./zta-mcp-stack/README.md)

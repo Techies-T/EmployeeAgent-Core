@@ -1,0 +1,88 @@
+version: "1.0"
+
+server:
+  port: 8085
+  host: "127.0.0.1"
+  cors:
+    origin: "*"
+
+auth:
+  issuer: "https://auth.techies.tokyo"
+  audience: "zta-mcp-gateway"
+  local_jwt_secret_env: "GATEWAY_JWT_SECRET"
+
+catalog:
+  definitions_file: "./catalog-definitions.yaml"
+
+secrets:
+  provider: "local"
+
+upstreams:
+  - id: "catalog"
+    path: "/mcp/catalog"
+    target: "internal://catalog"
+    description: "Meta-Catalog MCP for Database Schemas and GenUI Specifications"
+    policies:
+      role_mappings:
+        guest:
+          allowed_tools: []
+        analyst:
+          allowed_tools:
+            - "list_catalog"
+            - "get_catalog_detail"
+        admin:
+          allowed_tools:
+            - "*"
+
+  - id: "mariadb"
+    path: "/mcp/mariadb"
+    target: "http://127.0.0.1:33060/mcp"
+    description: "MariaDB MCP Server with ZTA Protection"
+    policies:
+      role_mappings:
+        guest:
+          allowed_tools: []
+        analyst:
+          allowed_tools:
+            - "read_query"
+            - "list_tables"
+            - "describe_table"
+        admin:
+          allowed_tools:
+            - "*"
+      firewall:
+        enforce_sql_check: true
+        restricted_roles:
+          - "analyst"
+        allowed_statements:
+          - "SELECT"
+          - "SHOW"
+          - "DESC"
+        deny_statements:
+          - "INSERT"
+          - "UPDATE"
+          - "DELETE"
+          - "DROP"
+          - "ALTER"
+          - "TRUNCATE"
+          - "GRANT"
+          - "REVOKE"
+
+  - id: "admin-procedures"
+    path: "/mcp/admin-procedures"
+    target: "http://127.0.0.1:33070/mcp"
+    description: "Digital Agency Administrative Procedures MCP Server with ZTA Protection"
+    policies:
+      role_mappings:
+        guest:
+          allowed_tools: []
+        analyst:
+          allowed_tools:
+            - "list_datasets"
+            - "inspect_dataset"
+            - "query_records"
+            - "summarize_records"
+        admin:
+          allowed_tools:
+            - "*"
+

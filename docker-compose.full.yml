@@ -1,0 +1,123 @@
+version: '3.8'
+
+volumes:
+  mariadb_npb_data:
+
+services:
+  # ============================================================================
+  # 1. EmployeeAgent-Core (MacOSUI Web & API Server)
+  # ============================================================================
+  macosui:
+    build: .
+    container_name: macosui-local
+    ports:
+      - "8080:8080"
+    volumes:
+      - ${DATA_DIR:-./data}:/app/data
+    env_file:
+      - server/development.env
+    environment:
+      - PORT=8080
+      - DB_TYPE=sqlite
+      - ZTA_GATEWAY_URL=http://zta-mcp-gateway:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - zta-gateway
+    restart: unless-stopped
+
+  # ============================================================================
+  # 2. ZTA-MCP-Gateway (Zero Trust OAuth JWT + SSE Proxy & SQL Firewall)
+  # ============================================================================
+  zta-gateway:
+    build:
+      context: ./zta-mcp-stack
+      dockerfile: Dockerfile
+    image: techies-t/zta-mcp-gateway:latest
+    container_name: zta-mcp-gateway
+    restart: unless-stopped
+    ports:
+      - "8085:8080"
+    environment:
+      - NODE_ENV=production
+      - GATEWAY_CONFIG_PATH=/app/config/gateway-config.yaml
+      - GATEWAY_JWT_SECRET=${GATEWAY_JWT_SECRET:-super-secret-key-for-local-docker}
+    volumes:
+      - ./zta-mcp-stack/config/gateway-config.sample.yaml:/app/config/gateway-config.yaml:ro
+      - ./zta-mcp-stack/config/catalog-definitions.yaml:/app/config/catalog-definitions.yaml:ro
+    depends_on:
+      - mariadb-mcp
+      - admin-procedures-mcp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================================================
+  # 3. NPB サンプル用 MariaDB 10.11 (2024-2026年 プロ野球公式戦データ)
+  # ============================================================================
+  test_mariadb:
+    image: mariadb:10.11
+    container_name: test_mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: my-secret-pw
+      MARIADB_DATABASE: testdb
+      MARIADB_USER: testuser
+      MARIADB_PASSWORD: testpassword
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./scripts/setup_npb_data.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - mariadb_npb_data:/var/lib/mysql
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================================================
+  # 4. MariaDB MCP サーバー
+  # ============================================================================
+  mariadb-mcp:
+    build:
+      context: ./zta-mcp-stack/services/mariadb-mcp
+      dockerfile: Dockerfile
+    image: techies-t/mariadb-mcp:latest
+    container_name: mariadb-mcp
+    restart: unless-stopped
+    ports:
+      - "33060:33060"
+    environment:
+      - NODE_ENV=production
+      - MCP_PORT=33060
+      - MCP_HOST=0.0.0.0
+      - DB_HOST=test_mariadb
+      - DB_PORT=3306
+      - DB_USER=testuser
+      - DB_PASSWORD=testpassword
+      - DB_NAME=testdb
+    depends_on:
+      - test_mariadb
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================================================
+  # 5. デジタル庁 行政手続等棚卸調査 MCP サーバー
+  # ============================================================================
+  admin-procedures-mcp:
+    build:
+      context: ./zta-mcp-stack/services/administrative-procedures-mcp
+      dockerfile: Dockerfile
+    image: techies-t/admin-procedures-mcp:latest
+    container_name: admin-procedures-mcp
+    restart: unless-stopped
+    ports:
+      - "33070:33070"
+    environment:
+      - ADMIN_PROCEDURES_HOST=0.0.0.0
+      - ADMIN_PROCEDURES_PORT=33070
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  default:
+    driver: bridge
+    enable_ipv6: true
+    driver_opts:
+      com.docker.network.driver.mtu: 1280

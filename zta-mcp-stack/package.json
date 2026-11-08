@@ -1,0 +1,43 @@
+{
+  "name": "@techies-t/zta-mcp-gateway",
+  "version": "1.1.2",
+  "description": "Zero Trust Architecture (ZTA) Reverse Proxy Gateway for Model Context Protocol (MCP) Servers",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "tsx --test tests/**/*.test.ts",
+    "lint": "eslint src --ext .ts"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "zero-trust",
+    "zta",
+    "gateway",
+    "proxy",
+    "security",
+    "ai-agent",
+    "sql-firewall"
+  ],
+  "author": "Techies-T",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.8",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "node-sql-parser": "^5.3.0",
+    "yaml": "^2.7.0",
+    "zod": "^3.24.1"
+  }
+}
