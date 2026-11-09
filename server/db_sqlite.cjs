@@ -12,7 +12,12 @@ const db = new sqlite3.Database(dbPath, (err) => {
         console.error('Error opening database', err.message);
     } else {
         console.log('Connected to the SQLite database.');
-        db.run("PRAGMA journal_mode = WAL;");
+        // Use DELETE journal mode so single-file Docker bind mounts (database.sqlite) persist every write directly to the host file without losing data in ephemeral container -wal files
+        db.serialize(() => {
+            db.run("PRAGMA wal_checkpoint(TRUNCATE);", () => {});
+            db.run("PRAGMA journal_mode = DELETE;", () => {});
+            db.run("PRAGMA synchronous = FULL;", () => {});
+        });
         initDb();
     }
 });

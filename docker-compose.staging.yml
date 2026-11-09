@@ -14,6 +14,7 @@ services:
       - "8080:8080"
     extra_hosts:
       - "macosui-staging.techiespod.co.jp:host-gateway"
+      - "host.docker.internal:host-gateway"
 
   nginx:
     image: nginx:alpine

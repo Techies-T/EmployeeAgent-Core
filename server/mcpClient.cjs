@@ -34,9 +34,12 @@ function extractUserRoles(user) {
  */
 async function refreshConnections() {
     await mcpHarnessService.initMcpHarness();
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
         db.all("SELECT * FROM mcp_servers", [], async (err, rows) => {
-            if (err) return reject(err);
+            if (err) {
+                console.warn(`[MCP] Deferred refreshConnections (${err.message})`);
+                return resolve();
+            }
             
             for (const row of rows) {
                 let clientSecret = row.client_secret;

@@ -100,6 +100,9 @@ EOF
   fi
 
   # --- Database Initialization / Backup (Zero Data Loss) ---
+  # Flush any SQLite WAL changes inside running container directly to host file before backup/recreate
+  docker exec macosui-web node -e "const sqlite3=require('sqlite3'); const db=new sqlite3.Database('/app/server/database.sqlite'); db.serialize(()=>{ db.run('PRAGMA wal_checkpoint(TRUNCATE);'); db.run('PRAGMA journal_mode = DELETE;'); });" 2>/dev/null || true
+
   if [ -d server/database.sqlite ]; then
     rmdir server/database.sqlite 2>/dev/null || rm -rf server/database.sqlite
   fi

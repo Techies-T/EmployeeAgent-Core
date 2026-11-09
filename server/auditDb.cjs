@@ -13,7 +13,11 @@ const db = new sqlite3.Database(dbPath, (err) => {
         console.error('Error opening audit database:', err.message);
     } else {
         console.log('Connected to the SQLite Audit database.');
-        db.run("PRAGMA journal_mode = WAL;");
+        db.serialize(() => {
+            db.run("PRAGMA wal_checkpoint(TRUNCATE);", () => {});
+            db.run("PRAGMA journal_mode = DELETE;", () => {});
+            db.run("PRAGMA synchronous = FULL;", () => {});
+        });
         initDb();
     }
 });
