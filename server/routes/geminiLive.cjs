@@ -417,16 +417,24 @@ function setupGeminiLiveWebSocket(server) {
 
         const createSetupMessage = (modelName, voiceName, customPrompt, initialKnowledge) => {
             let systemPrompt = customPrompt || 
-                `あなたはMacOSUI（WebOSデスクトップ環境）の専属AIコンシェルジュ「MacOSUI Live」です。
-ユーザーが共有している画面のリアルタイム映像を見ながら、親切、簡潔、フレンドリーな日本語音声で対話してください。
+                `あなたはEmployee Agent（WebOSデスクトップ環境）の専属AIコンシェルジュ「Employee Agent Live」です。
+ユーザーが画面に表示しているダッシュボードやリアルタイム映像を見ながら、親切、簡潔、フレンドリーな日本語音声で対話してください。
 【あなたの役割】
-1. 操作ガイド: ユーザーが「この機能はどう使うの？」と聞いたら、画面上の具体的なタブ名、ボタンの位置（例:「画面左上の青いボタン」「3番目のタブ」）を視覚的に特定して教えてください。
-2. ナレッジ・AI Analytics解説: 画面にダッシュボードやグラフ（Chart.js、SVG、テーブル）、または読み込まれたナレッジレポートが表示されている場合、各チャートのトレンドや異常値、注目すべきKPIの意味を分かりやすく解説してください。
-3. FAQ対応 & ツール活用: レポート内容に関する質問には的確に回答し、必要に応じてナレッジ取得ツール（get_knowledge_article, search_knowledge_articles等）を活用して詳細データを参照してください。
-4. 全二重対話 (Barge-in対応): 音声対話のため、1回の発話は1〜3文程度で端的に返し、ユーザーの反応を待ちながらテンポよく会話を進めてください。ユーザーが途中で割り込んできた場合、即座にその質問に応答してください。`;
+1. 画面と同期した操作ナビゲーション解説（最重要）:
+   ダッシュボード（NPB分析レポート等）に複数の切り替えタブがある場合は、ユーザーが今見ている画面と解説が常に一致するよう、「まず最初に表示されている『〇〇』タブをご覧ください」「続いて、画面上部の『△△』タブをクリックして開いてご覧ください」のように、具体的なタブ名やボタンの操作を丁寧に案内しながら解説を進めてください。
+   また、ユーザーがダッシュボード上のタブを切り替えた通知を受け取った場合は、その新しく開かれたタブの内容に合わせて解説を行ってください。
+2. ナレッジ・AI Analytics解説:
+   画面にダッシュボードやグラフ（Chart.js、SVG、テーブル）、または読み込まれたナレッジレポートが表示されている場合、各チャートのトレンドや順位、注目すべきKPI・成績の意味を分かりやすく解説してください。
+3. FAQ対応 & ツール活用:
+   レポート内容に関する質問には的確に回答し、必要に応じてナレッジ取得ツール（get_knowledge_article, search_knowledge_articles等）を活用して詳細データを参照してください。
+4. 全二重対話 (Barge-in対応):
+   音声対話のため、1回の発話は2〜4文程度で端的に返し、ユーザーがタブを切り替えたり質問したりする間を設けながらテンポよく会話を進めてください。ユーザーが途中で割り込んできた場合、即座にその質問に応答してください。`;
 
             if (initialKnowledge && initialKnowledge.formattedContext) {
-                systemPrompt += `\n\n【現在開いているナレッジレポート】\n${initialKnowledge.formattedContext}\n\n※ユーザーと会話を開始する際は、「『${initialKnowledge.title}』のレポートを読み込みました。概要を説明しますが、質問があればいつでも質問が可能です」と音声で伝えた上で、続けてこのレポートの要約・重要ポイントを簡潔に話し始めてください。`;
+                const tabHint = (initialKnowledge.uiTabs && initialKnowledge.uiTabs.length > 0)
+                    ? `なお、このダッシュボードには「${initialKnowledge.uiTabs.join('」「')}」のタブがあります。まずは初期表示されている「${initialKnowledge.uiTabs[0]}」タブの見どころから案内し、他のタブについては「画面上部の『〇〇』タブを開いてご覧ください」と操作を促しながら解説してください。`
+                    : '';
+                systemPrompt += `\n\n【現在開いているナレッジレポート】\n${initialKnowledge.formattedContext}\n\n※ユーザーと会話を開始する際は、「『${initialKnowledge.title}』のダッシュボード画面を表示しました。概要を順番に解説しますが、質問や気になるタブがあればいつでもお声がけください」と音声で伝えた上で、続けてこのレポートの要約・重要ポイントを簡潔に話し始めてください。${tabHint}`;
             }
 
             const isExtendedThinking = modelName.includes('extended-thinking') || modelName.includes('thinking');
@@ -651,6 +659,42 @@ function setupGeminiLiveWebSocket(server) {
                         if (art) {
                             currentKnowledgeContext = extractKnowledgeContext(art);
                             console.log(`[Gemini Live WS] Loaded initial knowledge: ${currentKnowledgeContext.title} (#${currentKnowledgeContext.id})`);
+                            if (clientWs.readyState === WebSocket.OPEN) {
+                                clientWs.send(JSON.stringify({
+                                    type: 'knowledge_loaded',
+                                    knowledge: {
+                                        id: currentKnowledgeContext.id,
+                                        title: currentKnowledgeContext.title,
+                                        tags: currentKnowledgeContext.tags,
+                                        created_at: currentKnowledgeContext.created_at,
+                                        rawHtml: currentKnowledgeContext.rawHtml,
+                                        rawContent: currentKnowledgeContext.rawContent,
+                                        uiTabs: currentKnowledgeContext.uiTabs
+                                    }
+                                }));
+                            }
+                        }
+                    } else if (parsed.initialRawHtml) {
+                        // MCPチャット画面等から直接HTML/SVGダッシュボードが渡された場合
+                        currentKnowledgeContext = extractKnowledgeContext({
+                            id: null,
+                            title: parsed.initialKnowledgeTitle || 'AI Analytics ダッシュボード',
+                            content: parsed.initialRawHtml,
+                            tags: ['MCP Direct', 'Dashboard']
+                        });
+                        console.log(`[Gemini Live WS] Loaded initial raw HTML dashboard: ${currentKnowledgeContext.title}`);
+                        if (clientWs.readyState === WebSocket.OPEN) {
+                            clientWs.send(JSON.stringify({
+                                type: 'knowledge_loaded',
+                                knowledge: {
+                                    id: null,
+                                    title: currentKnowledgeContext.title,
+                                    tags: currentKnowledgeContext.tags,
+                                    rawHtml: currentKnowledgeContext.rawHtml || parsed.initialRawHtml,
+                                    rawContent: parsed.initialRawHtml,
+                                    uiTabs: currentKnowledgeContext.uiTabs
+                                }
+                            }));
                         }
                     }
 
@@ -682,13 +726,17 @@ function setupGeminiLiveWebSocket(server) {
 
                     const extracted = extractKnowledgeContext(article);
                     currentKnowledgeContext = extracted;
-                    console.log(`[Gemini Live WS] Knowledge loaded via load_knowledge: ${extracted.title} (isSwitch: ${isSwitch})`);
+                    console.log(`[Gemini Live WS] Knowledge loaded via load_knowledge: ${extracted.title} (isSwitch: ${isSwitch}, tabs: ${(extracted.uiTabs || []).length})`);
+
+                    const tabNavGuide = (extracted.uiTabs && extracted.uiTabs.length > 0)
+                        ? `\n\n【重要：画面と解説の同期ナビゲーション指示】\n画面のダッシュボードには「${extracted.uiTabs.join('」「')}」のタブがあります。現在は最初の「${extracted.uiTabs[0]}」タブがユーザーの画面に表示されています。まずは「現在は『${extracted.uiTabs[0]}』タブが表示されています」と伝えてその内容を解説し、別のタブのデータに触れる際は必ず「続いて画面上部の『〇〇』タブをクリックして開いてご覧ください」とユーザーの画面操作を丁寧に案内してください。`
+                        : '';
 
                     // Upstream が接続中の場合、clientContent を送信して AI に音声発話をキック
                     if (isSetupSent && isUpstreamOpen && upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
                         const promptText = isSwitch
-                            ? `[システム通知: 画面が切り替わりました。ユーザーは新しいレポート『${extracted.title}』を表示しています。ユーザーに「画面が切り替わりました。『${extracted.title}』のレポートを読み込みました。概要を説明しますが、質問があればいつでも質問が可能です」と音声で伝えた上で、続けてこのレポートの要約・主要な発見を簡潔に説明してください。\n\n【新レポート内容】\n${extracted.formattedContext}]`
-                            : `[システム通知: ユーザーはナレッジレポート『${extracted.title}』を開きました。ユーザーに「『${extracted.title}』のレポートを読み込みました。概要を説明しますが、質問があればいつでも質問が可能です」と音声で伝えた上で、続けてこのレポートの要約・主要な発見を簡潔に説明してください。\n\n【レポート内容】\n${extracted.formattedContext}]`;
+                            ? `[システム通知: 画面が切り替わりました。ユーザーの画面に新しいダッシュボード『${extracted.title}』が表示されました。ユーザーに「画面が切り替わりました。『${extracted.title}』のダッシュボード画面を表示しました。概要を順番に解説しますが、質問があればいつでもどうぞ」と音声で伝えた上で、続けてこのレポートの要約・主要な発見を画面のタブ構成に沿って簡潔に説明してください。${tabNavGuide}\n\n【新レポート内容】\n${extracted.formattedContext}]`
+                            : `[システム通知: ユーザーの画面にナレッジダッシュボード『${extracted.title}』が表示されました。ユーザーに「『${extracted.title}』のダッシュボード画面を表示しました。概要を順番に解説しますが、質問があればいつでもどうぞ」と音声で伝えた上で、続けてこのレポートの要約・主要な発見を画面のタブ構成に沿って簡潔に説明してください。${tabNavGuide}\n\n【レポート内容】\n${extracted.formattedContext}]`;
 
                         console.log('[Gemini Live WS] Committing knowledge turn to Gemini Live...');
                         upstreamWs.send(JSON.stringify({
@@ -711,7 +759,64 @@ function setupGeminiLiveWebSocket(server) {
                                 id: extracted.id,
                                 title: extracted.title,
                                 tags: extracted.tags,
-                                created_at: extracted.created_at
+                                created_at: extracted.created_at,
+                                rawHtml: extracted.rawHtml,
+                                rawContent: extracted.rawContent,
+                                uiTabs: extracted.uiTabs
+                            }
+                        }));
+                    }
+                    return;
+                }
+
+                // カスタムアクション: MCPチャット等から直接渡された生HTMLダッシュボードの動的ロード
+                if (parsed.type === 'load_raw_html' && parsed.rawHtml) {
+                    const extracted = extractKnowledgeContext({
+                        id: null,
+                        title: parsed.title || 'AI Analytics ダッシュボード',
+                        content: parsed.rawHtml,
+                        tags: ['MCP Direct', 'Dashboard']
+                    });
+                    currentKnowledgeContext = extracted;
+                    const tabNavGuide = (extracted.uiTabs && extracted.uiTabs.length > 0)
+                        ? `\n\n【重要：画面と解説の同期ナビゲーション指示】\n画面のダッシュボードには「${extracted.uiTabs.join('」「')}」のタブがあります。現在は最初の「${extracted.uiTabs[0]}」タブがユーザーの画面に表示されています。まずは「現在は『${extracted.uiTabs[0]}』タブが表示されています」と伝えてその内容を解説し、別のタブのデータに触れる際は必ず「続いて画面上部の『〇〇』タブをクリックして開いてご覧ください」とユーザーの画面操作を丁寧に案内してください。`
+                        : '';
+
+                    if (isSetupSent && isUpstreamOpen && upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
+                        const promptText = `[システム通知: ユーザーはMCPチャットから『${extracted.title}』のダッシュボード画面を開きました。ユーザーに「『${extracted.title}』のダッシュボードを読み込みました。画面に沿って順番に解説します」と音声で伝えた上で、タブ構成と主要なデータを簡潔に解説してください。${tabNavGuide}\n\n【ダッシュボード内容】\n${extracted.formattedContext}]`;
+                        upstreamWs.send(JSON.stringify({
+                            clientContent: {
+                                turns: [{ role: 'user', parts: [{ text: promptText }] }],
+                                turnComplete: true
+                            }
+                        }));
+                    }
+
+                    if (clientWs.readyState === WebSocket.OPEN) {
+                        clientWs.send(JSON.stringify({
+                            type: 'knowledge_loaded',
+                            knowledge: {
+                                id: null,
+                                title: extracted.title,
+                                tags: extracted.tags,
+                                rawHtml: extracted.rawHtml || parsed.rawHtml,
+                                rawContent: parsed.rawHtml,
+                                uiTabs: extracted.uiTabs
+                            }
+                        }));
+                    }
+                    return;
+                }
+
+                // カスタムアクション: ユーザーがダッシュボード内のタブをクリックして切り替えた際の同期通知
+                if (parsed.type === 'user_tab_changed' && parsed.tabName) {
+                    console.log(`[Gemini Live WS] User clicked dashboard tab: ${parsed.tabName}`);
+                    if (isSetupSent && isUpstreamOpen && upstreamWs && upstreamWs.readyState === WebSocket.OPEN) {
+                        const tabPrompt = `[システム通知: ユーザーがダッシュボード画面上の「${parsed.tabName}」タブをクリックして開きました。現在ユーザーが見ている「${parsed.tabName}」タブに表示されているグラフや数値データの見どころ・ポイントを簡潔に音声で解説してください。]`;
+                        upstreamWs.send(JSON.stringify({
+                            clientContent: {
+                                turns: [{ role: 'user', parts: [{ text: tabPrompt }] }],
+                                turnComplete: true
                             }
                         }));
                     }

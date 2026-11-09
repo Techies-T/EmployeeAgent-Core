@@ -9,7 +9,7 @@ const AVAILABLE_VOICES = [
     { id: 'Fenrir', name: 'Fenrir (重厚で信頼感のある男声)' }
 ];
 
-const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initialKnowledgeTitle }) => {
+const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initialKnowledgeTitle, initialRawHtml, triggerTs }) => {
     // 接続状態
     const [connectionStatus, setConnectionStatus] = useState('disconnected'); // 'disconnected' | 'connecting' | 'connected' | 'error'
     const [statusMessage, setStatusMessage] = useState('接続待機中');
@@ -22,12 +22,16 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
     const [selectedVoice, setSelectedVoice] = useState('Kore');
     const [isConfigOpen, setIsConfigOpen] = useState(false);
 
-    // ナレッジデータベース連携状態
+    // ナレッジデータベース & 内蔵HTML/SVGダッシュボード連携状態
     const [knowledgeList, setKnowledgeList] = useState([]);
     const [selectedKnowledgeId, setSelectedKnowledgeId] = useState(initialKnowledgeId ? String(initialKnowledgeId) : '');
     const [currentKnowledge, setCurrentKnowledge] = useState(
-        initialKnowledgeId ? { id: initialKnowledgeId, title: initialKnowledgeTitle || '読み込み中...' } : null
+        initialRawHtml
+            ? { id: null, title: initialKnowledgeTitle || 'AI Analytics ダッシュボード', rawHtml: initialRawHtml, tags: ['MCP Direct'] }
+            : (initialKnowledgeId ? { id: initialKnowledgeId, title: initialKnowledgeTitle || '読み込み中...' } : null)
     );
+    const [activeDashboardTab, setActiveDashboardTab] = useState('');
+    const [isDashboardExpanded, setIsDashboardExpanded] = useState(true);
     const [isToolExecuting, setIsToolExecuting] = useState(false);
     const [executingToolLabel, setExecutingToolLabel] = useState('');
 
@@ -46,8 +50,8 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
         {
             role: 'assistant',
             text: initialKnowledgeTitle
-                ? `ナレッジ「${initialKnowledgeTitle}」を読み込んでいます。マイクをONにして会話を始めましょう。`
-                : 'こんにちは！Employee Agent Live Concierge です。画面を共有してマイクをONにすると、あなたの操作している画面を見ながら音声でご案内します。ナレッジレポートの解説もお任せください。',
+                ? `ダッシュボード「${initialKnowledgeTitle}」を表示しています。画面のタブ構成に沿って音声で解説します（マイクをONにすると質問も可能です）。`
+                : 'こんにちは！Employee Agent Live Concierge です。上部の「対象ナレッジ」を選択すると、この画面内にHTML/SVGダッシュボードを表示してタブ操作を案内しながら音声解説します。',
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
     ]);
@@ -102,8 +106,17 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
                 if (data.articles && Array.isArray(data.articles)) {
                     setKnowledgeList(data.articles);
                     if (selectedKnowledgeId) {
-                        const matched = data.articles.find(a => a.id === Number(selectedKnowledgeId));
-                        if (matched) setCurrentKnowledge(matched);
+                        fetch(`/api/gemini-live/knowledge/${selectedKnowledgeId}`)
+                            .then(r => r.ok ? r.json() : null)
+                            .then(detail => {
+                                if (detail) {
+                                    setCurrentKnowledge(detail);
+                                    if (detail.uiTabs && detail.uiTabs.length > 0) {
+                                        setActiveDashboardTab(detail.uiTabs[0]);
+                                    }
+                                }
+                            })
+                            .catch(() => {});
                     }
                 }
             })
@@ -120,10 +133,60 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
         }
     }, [initialKnowledgeId]);
 
+    // 外部 props (initialRawHtml: MCPチャットの[Live解説]ボタン) が渡された場合の動的ロード
+    useEffect(() => {
+        if (initialRawHtml) {
+            setSelectedKnowledgeId('');
+            setCurrentKnowledge({
+                id: null,
+                title: initialKnowledgeTitle || 'AI Analytics ダッシュボード',
+                rawHtml: initialRawHtml,
+                tags: ['MCP Direct']
+            });
+            setActiveDashboardTab('');
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({
+                    type: 'load_raw_html',
+                    title: initialKnowledgeTitle || 'AI Analytics ダッシュボード',
+                    rawHtml: initialRawHtml
+                }));
+            }
+        }
+    }, [initialRawHtml, triggerTs]);
+
+    // 内蔵 HTML/SVG ダッシュボード iframe 内のタブクリックイベントを受信し、AI音声解説と同期
+    useEffect(() => {
+        const handleIframeMessage = (event) => {
+            if (event.data && event.data.type === 'EA_LIVE_TAB_CHANGED' && event.data.tabName) {
+                const tabName = String(event.data.tabName).trim();
+                setActiveDashboardTab(tabName);
+                setStatusMessage(`ダッシュボードの「${tabName}」タブを表示中`);
+                setTranscripts(prev => [
+                    ...prev,
+                    {
+                        role: 'user',
+                        text: `🖱️ [画面操作] ダッシュボードの「${tabName}」タブを開きました`,
+                        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    }
+                ]);
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    audioPlayerRef.current?.unlock();
+                    wsRef.current.send(JSON.stringify({
+                        type: 'user_tab_changed',
+                        tabName
+                    }));
+                }
+            }
+        };
+        window.addEventListener('message', handleIframeMessage);
+        return () => window.removeEventListener('message', handleIframeMessage);
+    }, []);
+
     const handleSelectKnowledge = (knowledgeId, isSwitch = false) => {
         setSelectedKnowledgeId(knowledgeId);
         if (!knowledgeId) {
             setCurrentKnowledge(null);
+            setActiveDashboardTab('');
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({
                     type: 'load_knowledge',
@@ -133,12 +196,22 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
             return;
         }
 
-        const matched = knowledgeList.find(k => k.id === Number(knowledgeId));
-        if (matched) {
-            setCurrentKnowledge(matched);
-        }
+        // REST API から即座に HTML/SVG コンテンツとタブ構成を取得して画面表示
+        fetch(`/api/gemini-live/knowledge/${knowledgeId}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(detail => {
+                if (detail) {
+                    setCurrentKnowledge(detail);
+                    setActiveDashboardTab((detail.uiTabs && detail.uiTabs.length > 0) ? detail.uiTabs[0] : '');
+                }
+            })
+            .catch(() => {
+                const matched = knowledgeList.find(k => k.id === Number(knowledgeId));
+                if (matched) setCurrentKnowledge(matched);
+            });
 
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            audioPlayerRef.current?.unlock();
             wsRef.current.send(JSON.stringify({
                 type: 'load_knowledge',
                 knowledgeId: Number(knowledgeId),
@@ -208,12 +281,14 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
             setStatusMessage('接続完了。初期セットアップを送信中...');
 
             const modelToUse = overrideModel || selectedModel;
-            // 初期セッションパラメータを送信 (専用Liveモデルと対象ナレッジを指定)
+            // 初期セッションパラメータを送信 (専用Liveモデルと対象ナレッジまたはMCP直接HTMLを指定)
             ws.send(JSON.stringify({
                 type: 'init_session',
                 model: modelToUse,
                 voiceName: selectedVoice,
-                initialKnowledgeId: selectedKnowledgeId ? Number(selectedKnowledgeId) : undefined
+                initialKnowledgeId: selectedKnowledgeId ? Number(selectedKnowledgeId) : undefined,
+                initialKnowledgeTitle: initialKnowledgeTitle || undefined,
+                initialRawHtml: (!selectedKnowledgeId && initialRawHtml) ? initialRawHtml : undefined
             }));
         };
 
@@ -235,13 +310,23 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
                 }
 
                 if (data.type === 'knowledge_loaded') {
-                    setCurrentKnowledge(data.knowledge);
-                    setStatusMessage(`ナレッジ「${data.knowledge.title}」を読み込みました`);
+                    setCurrentKnowledge(prev => ({
+                        ...(prev || {}),
+                        ...data.knowledge,
+                        rawHtml: data.knowledge.rawHtml || prev?.rawHtml || null,
+                        rawContent: data.knowledge.rawContent || prev?.rawContent || null,
+                        uiTabs: data.knowledge.uiTabs || prev?.uiTabs || []
+                    }));
+                    if (data.knowledge.uiTabs && data.knowledge.uiTabs.length > 0) {
+                        setActiveDashboardTab(data.knowledge.uiTabs[0]);
+                    }
+                    setStatusMessage(`ダッシュボード「${data.knowledge.title}」を表示・読み込みました`);
                     return;
                 }
 
                 if (data.type === 'knowledge_unloaded') {
                     setCurrentKnowledge(null);
+                    setActiveDashboardTab('');
                     setStatusMessage('ナレッジ選択を解除しました');
                     return;
                 }
@@ -539,6 +624,77 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
         }
     };
 
+    // 内蔵 HTML/SVG ダッシュボード用の srcDoc 生成（タブ操作検知ブリッジ & 未完結タグ補完付き）
+    const preparedDashboardHtml = React.useMemo(() => {
+        const raw = currentKnowledge?.rawHtml;
+        if (!raw) return '';
+        let sanitized = raw;
+        const scriptOpenCount = (sanitized.match(/<script\b[^>]*>/gi) || []).length;
+        const scriptCloseCount = (sanitized.match(/<\/script>/gi) || []).length;
+        if (scriptOpenCount > scriptCloseCount) {
+            sanitized += '\n;/* unclosed block auto-recovery */\n</script></body></html>';
+        }
+
+        const bridgeScript = `
+<script>
+window.onerror = function(msg) {
+    setTimeout(function() {
+        var panels = document.querySelectorAll('[id^="content-"], [id^="tab-content-"]');
+        if (panels.length > 0) {
+            var anyVisible = false;
+            panels.forEach(function(p) {
+                if (!p.classList.contains('hidden') && p.style.display !== 'none') anyVisible = true;
+            });
+            if (!anyVisible && panels[0]) {
+                panels[0].classList.remove('hidden');
+                panels[0].style.display = 'block';
+            }
+        }
+    }, 150);
+    return false;
+};
+(function() {
+    function fireReady() {
+        try {
+            window.dispatchEvent(new Event('DOMContentLoaded'));
+            window.dispatchEvent(new Event('load'));
+        } catch (_) {}
+    }
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        setTimeout(fireReady, 50);
+        setTimeout(fireReady, 300);
+    } else {
+        document.addEventListener('DOMContentLoaded', function() { setTimeout(fireReady, 50); });
+        window.addEventListener('load', function() { setTimeout(fireReady, 50); });
+    }
+
+    // ユーザーがダッシュボード内のタブボタンをクリックした際に親(LiveConcierge)へ通知してAI解説を同期
+    document.addEventListener('click', function(e) {
+        var btn = e.target && e.target.closest ? e.target.closest('button, [role="tab"], [data-tab]') : null;
+        if (!btn) return;
+        var onclickAttr = btn.getAttribute('onclick') || '';
+        var idAttr = btn.getAttribute('id') || '';
+        var roleAttr = btn.getAttribute('role') || '';
+        var hasDataTab = btn.hasAttribute('data-tab');
+        if (/switchTab|showTab|changeTab|openTab|selectTab/i.test(onclickAttr) || /^tab-/i.test(idAttr) || roleAttr === 'tab' || hasDataTab) {
+            var label = (btn.innerText || btn.textContent || '').replace(/\\s+/g, ' ').trim();
+            if (label && window.parent) {
+                window.parent.postMessage({ type: 'EA_LIVE_TAB_CHANGED', tabName: label }, '*');
+            }
+        }
+    }, true);
+})();
+</script>
+`;
+        if (sanitized.includes('<head>')) {
+            return sanitized.replace('<head>', `<head>${bridgeScript}`);
+        }
+        if (sanitized.includes('</body>')) {
+            return sanitized.replace('</body>', `${bridgeScript}</body>`);
+        }
+        return bridgeScript + sanitized;
+    }, [currentKnowledge?.rawHtml]);
+
     return (
         <div 
             onClick={() => audioPlayerRef.current?.unlock()}
@@ -716,12 +872,48 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
                 )}
             </div>
 
-            {/* Main Stage Area: 画面共有プレビュー & 波形ビジュアライザー */}
+            {/* Main Stage Area: 内蔵 HTML/SVG ダッシュボード または 画面共有プレビュー & 波形ビジュアライザー */}
             <div className="flex-none p-4 bg-gradient-to-b from-[#202024] to-[#18181b] border-b border-gray-800">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* 画面共有プレビュー小窓 */}
-                    <div className="relative aspect-video bg-black/60 rounded-xl overflow-hidden border border-gray-800/80 flex flex-col items-center justify-center group shadow-inner">
-                        {isScreenActive && screenPreviewUrl ? (
+                <div className={`grid gap-4 ${preparedDashboardHtml && isDashboardExpanded ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
+                    {/* 左ステージ: 内蔵 HTML/SVG ダッシュボード (ナレッジ選択時・MCP直行時) または 画面共有プレビュー */}
+                    <div className={`relative ${preparedDashboardHtml ? (isDashboardExpanded ? 'h-[360px] sm:h-[420px]' : 'h-[260px]') : 'aspect-video'} bg-black/60 rounded-xl overflow-hidden border border-gray-800/80 flex flex-col items-center justify-center group shadow-inner`}>
+                        {preparedDashboardHtml && !isScreenActive ? (
+                            <div className="w-full h-full flex flex-col bg-white">
+                                {/* ダッシュボード上部同期バー */}
+                                <div className="flex-none px-3 py-1.5 bg-[#1e1e24] text-gray-200 border-b border-gray-800 flex items-center justify-between text-[11px] gap-2">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <span className="px-1.5 py-0.5 rounded bg-indigo-600 text-white text-[10px] font-bold shrink-0">
+                                            📊 HTML/SVG 同期表示
+                                        </span>
+                                        <span className="font-semibold text-gray-100 truncate">
+                                            {currentKnowledge?.title || 'ダッシュボード'}
+                                        </span>
+                                        {activeDashboardTab && (
+                                            <span className="px-2 py-0.5 rounded-full bg-emerald-950/90 text-emerald-300 border border-emerald-700/60 text-[10px] font-medium shrink-0">
+                                                表示タブ: {activeDashboardTab}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsDashboardExpanded(prev => !prev)}
+                                            className="px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 text-[10px] font-medium transition-colors"
+                                            title={isDashboardExpanded ? '2カラム表示に戻す' : 'ダッシュボードを横幅いっぱいに拡大表示'}
+                                        >
+                                            {isDashboardExpanded ? '◫ 2カラム表示' : '⤢ 拡大表示'}
+                                        </button>
+                                    </div>
+                                </div>
+                                {/* インタラクティブ HTML/SVG ダッシュボード本体 (Browserウィジェット不要でタブ操作・Chart.js描画が動作) */}
+                                <iframe
+                                    title={currentKnowledge?.title || 'Knowledge HTML/SVG Dashboard'}
+                                    srcDoc={preparedDashboardHtml}
+                                    className="w-full flex-1 border-0 bg-white"
+                                    sandbox="allow-scripts allow-same-origin"
+                                />
+                            </div>
+                        ) : isScreenActive && screenPreviewUrl ? (
                             <>
                                 <img
                                     src={screenPreviewUrl}
@@ -736,11 +928,11 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
                         ) : (
                             <div className="flex flex-col items-center justify-center text-gray-500 p-4 text-center">
                                 <div className="w-12 h-12 rounded-full bg-gray-800/80 flex items-center justify-center mb-2 text-xl">
-                                    🖥️
+                                    📊
                                 </div>
-                                <p className="text-xs font-medium text-gray-400">画面が共有されていません</p>
+                                <p className="text-xs font-medium text-gray-300">上部の「対象ナレッジ」を選択すると、ここにHTML/SVG画面が表示されます</p>
                                 <p className="text-[11px] text-gray-500 mt-1 max-w-xs">
-                                    下の「画面共有を開始」ボタンを押すと、AIがあなたの操作画面を見ながら案内します。
+                                    Browserウィジェット不要でダッシュボード内のタブを切り替えながら、AIの音声解説を聞くことができます。
                                 </p>
                             </div>
                         )}
@@ -764,7 +956,7 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
                             </div>
 
                             {/* 音声ビジュアライザー波形 */}
-                            <div className="h-20 bg-black/40 rounded-lg flex items-center justify-center gap-1.5 px-4 overflow-hidden border border-gray-800">
+                            <div className={`${preparedDashboardHtml && isDashboardExpanded ? 'h-12' : 'h-20'} bg-black/40 rounded-lg flex items-center justify-center gap-1.5 px-4 overflow-hidden border border-gray-800`}>
                                 {[...Array(24)].map((_, i) => {
                                     // AI発話時またはユーザー発話時の動的波形高さ
                                     const baseVol = isAiSpeaking ? aiVolume : (isMicActive ? userVolume : 2);
@@ -790,7 +982,7 @@ const LiveConcierge = ({ onOpen: _onOpen, user: _user, initialKnowledgeId, initi
                         <div className="text-[11px] text-gray-400 bg-gray-900/60 p-2.5 rounded-lg border border-gray-800/60 mt-3 flex items-start gap-2">
                             <span className="text-amber-400">💡</span>
                             <span>
-                                <strong>ヒント:</strong> 「この画面のダッシュボードを解説して」「このボタンを押したら何が起きる？」とそのまま声で尋ねてください。AIが画面を直接見て答えます。
+                                <strong>操作同期ナビ:</strong> AIが「〇〇タブを開いてご覧ください」と案内します。また、あなたがダッシュボード内のタブをクリックして切り替えると、AIも自動的にそのタブの解説へ切り替わります。
                             </span>
                         </div>
                     </div>

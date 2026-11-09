@@ -136,11 +136,13 @@ window.onerror = function(msg, url, line, col, error) {
                                 const titleMatch = code.match(/<title>([^<]+)<\/title>/i) || code.match(/<h[12][^>]*>([^<]+)<\/h[12]>/i);
                                 const title = (titleMatch && titleMatch[1]) ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'AI Analytics ダッシュボード';
                                 onOpen('live-concierge', 'live-concierge', 'Live Concierge', {
-                                    initialKnowledgeTitle: title
+                                    initialKnowledgeTitle: title,
+                                    initialRawHtml: code,
+                                    triggerTs: Date.now()
                                 });
                             }}
                             className="px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-xs"
-                            title="Live Concierge を起動し、音声でこのダッシュボードの解説を聞く"
+                            title="Live Concierge を起動し、この HTML/SVG ダッシュボードを画面表示しながら音声解説を聞く"
                         >
                             <span>🎙️</span>
                             <span>Live解説</span>
