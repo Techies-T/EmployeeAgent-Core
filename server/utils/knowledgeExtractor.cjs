@@ -18,8 +18,8 @@ function extractDashboardTabs(html) {
         const attrs = match[1] || '';
         const innerText = (match[2] || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
         if (!innerText) continue;
-        // onclick="switchTab(...)" や id="tab-..." や data-tab などのタブ切り替えボタンを検出
-        if (/switchTab|showTab|changeTab|openTab|selectTab|data-tab|role=["']tab["']|id=["']tab-|tab-btn/i.test(attrs)) {
+        // onclick="switchTab(...)" や id="tab-..." や data-tab、年度/リーグ切替ボタンなどのタブ切り替え要素を検出
+        if (/switchTab|showTab|changeTab|openTab|selectTab|setYear|setLeague|setView|setCategory|data-tab|role=["']tab["']|id=["'](?:tab-|btn-)|tab-btn/i.test(attrs)) {
             if (!tabs.includes(innerText)) {
                 tabs.push(innerText);
             }
@@ -138,7 +138,14 @@ function extractKnowledgeContext(article, maxChars = 6000) {
     }
 
     const rawContent = article.content || '';
-    const { htmlBlocks, primaryHtml, uiTabs, markdownWithoutHtml } = parseDashboardBlocks(rawContent);
+    let { htmlBlocks, primaryHtml, uiTabs, markdownWithoutHtml } = parseDashboardBlocks(rawContent);
+
+    // published_reports テーブルから取得された HTML (Secure URL リンク型記事) の統合
+    if (!primaryHtml && article.publishedHtml) {
+        primaryHtml = article.publishedHtml.trim();
+        htmlBlocks = [primaryHtml];
+        uiTabs = extractDashboardTabs(primaryHtml);
+    }
 
     // 各パートのテキスト化
     const markdownText = (primaryHtml === rawContent.trim())

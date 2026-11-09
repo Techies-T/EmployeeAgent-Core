@@ -51,7 +51,18 @@ async function fetchArticleById(id, user) {
             if (!hasAllAccess && row.pod_id && !allowedPods.includes(row.pod_id)) {
                 return resolve(null); // アクセス権限なし
             }
-            resolve(row);
+            // 記事内に /reports/<uuid> リンクが含まれている場合、published_reports テーブルから HTML 本体を自動取得
+            const reportMatch = (row.content || '').match(/\/reports\/([0-9a-fA-F-]{36})/);
+            if (reportMatch && reportMatch[1]) {
+                db.get("SELECT content FROM published_reports WHERE id = ?", [reportMatch[1]], (repErr, repRow) => {
+                    if (!repErr && repRow && repRow.content) {
+                        row.publishedHtml = repRow.content;
+                    }
+                    resolve(row);
+                });
+            } else {
+                resolve(row);
+            }
         });
     });
 }
@@ -81,7 +92,7 @@ async function searchArticles(query, user, limit = 5) {
                 sql += ` AND (k.pod_id IS NULL OR k.pod_id = '')`;
             }
         }
-        sql += ` ORDER BY k.updated_at DESC LIMIT ?`;
+        sql += ` ORDER BY k.created_at DESC, k.id DESC LIMIT ?`;
         params.push(limit);
 
         db.all(sql, params, (err, rows) => {
@@ -119,7 +130,7 @@ async function listRecentArticles(limit = 10, user) {
                 sql += ` AND (k.pod_id IS NULL OR k.pod_id = '')`;
             }
         }
-        sql += ` ORDER BY k.updated_at DESC LIMIT ?`;
+        sql += ` ORDER BY k.created_at DESC, k.id DESC LIMIT ?`;
         params.push(limit);
 
         db.all(sql, params, (err, rows) => {
@@ -278,7 +289,7 @@ router.post('/settings', async (req, res) => {
  */
 router.get('/knowledge/list', async (req, res) => {
     try {
-        const list = await listRecentArticles(30, req.user);
+        const list = await listRecentArticles(100, req.user);
         res.json({ articles: list });
     } catch (err) {
         console.error('[Gemini Live API] Failed to list knowledge articles:', err);

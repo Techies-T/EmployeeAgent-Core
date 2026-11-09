@@ -200,8 +200,8 @@ const Desktop = ({ user, onLogout, config }) => {
         width = 1000;
         height = 650;
       } else if (type === 'live-concierge') {
-        width = 980;
-        height = 700;
+        width = 1240;
+        height = 780;
       } else if (type === 'knowledge-base') {
         width = 900;
         height = 650;
