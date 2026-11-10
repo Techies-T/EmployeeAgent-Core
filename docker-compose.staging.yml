@@ -10,6 +10,8 @@ services:
       - ./server/audit_database.sqlite:/app/server/audit_database.sqlite
     env_file:
       - ${ENV_FILE:-server/staging.env}
+    environment:
+      - NODE_OPTIONS=--max-old-space-size=384
     ports:
       - "8080:8080"
     extra_hosts:

@@ -42,7 +42,8 @@ async function fetchArticleById(id, user) {
 
     return new Promise((resolve) => {
         db.get(`
-            SELECT k.*, u.name as author_name, u.avatar_url as author_avatar 
+            SELECT k.*, u.name as author_name,
+                   CASE WHEN u.avatar_url LIKE 'data:%' THEN ('/api/users/' || u.id || '/avatar') ELSE u.avatar_url END as author_avatar
             FROM knowledge_articles k
             LEFT JOIN users u ON k.author_id = u.id
             WHERE k.id = ?

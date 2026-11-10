@@ -95,30 +95,52 @@ export async function registerPasskeyClient(deviceName = '') {
         : null;
 
     const defaultLabel = deviceName || (navigator.platform ? `${navigator.platform} Passkey` : 'Platform Passkey');
+    const rpId = rawOptions?.rp?.id || window.location.hostname;
 
-    const verifyRes = await rawFetch('/api/auth/passkey/register/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            deviceName: defaultLabel,
-            publicKeySpki,
-            publicKeyAlg,
-            credential: {
-                id: cred.id,
-                rawId: bufferToBase64Url(cred.rawId),
-                type: cred.type,
-                response: {
-                    clientDataJSON: bufferToBase64Url(attestationResponse.clientDataJSON),
-                    attestationObject: bufferToBase64Url(attestationResponse.attestationObject),
-                    authenticatorData: authDataBuffer ? bufferToBase64Url(authDataBuffer) : undefined,
-                    transports
+    let verifyRes;
+    try {
+        verifyRes = await rawFetch('/api/auth/passkey/register/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                deviceName: defaultLabel,
+                publicKeySpki,
+                publicKeyAlg,
+                credential: {
+                    id: cred.id,
+                    rawId: bufferToBase64Url(cred.rawId),
+                    type: cred.type,
+                    response: {
+                        clientDataJSON: bufferToBase64Url(attestationResponse.clientDataJSON),
+                        attestationObject: bufferToBase64Url(attestationResponse.attestationObject),
+                        authenticatorData: authDataBuffer ? bufferToBase64Url(authDataBuffer) : undefined,
+                        transports
+                    }
                 }
-            }
-        })
-    });
+            })
+        });
+    } catch (networkErr) {
+        if (typeof PublicKeyCredential.signalUnknownCredential === 'function') {
+            try {
+                await PublicKeyCredential.signalUnknownCredential({
+                    rpId,
+                    credentialId: cred.id
+                });
+            } catch (_) {}
+        }
+        throw networkErr;
+    }
 
     const verifyData = await verifyRes.json().catch(() => ({}));
     if (!verifyRes.ok) {
+        if (typeof PublicKeyCredential.signalUnknownCredential === 'function') {
+            try {
+                await PublicKeyCredential.signalUnknownCredential({
+                    rpId,
+                    credentialId: cred.id
+                });
+            } catch (_) {}
+        }
         throw new Error(verifyData.error || 'パスキーの検証に失敗しました。');
     }
     return verifyData;
@@ -231,7 +253,7 @@ const SessionLockModal = ({
         isPlatformPasskeySupported().then(setPasskeySupported);
 
         const rawFetch = window.__eaOriginalFetch || window.fetch;
-        rawFetch('/api/auth/passkey/list')
+        rawFetch('/api/auth/passkey/list', { cache: 'no-store' })
             .then(r => (r.ok ? r.json() : { passkeys: [] }))
             .then(data => {
                 setHasPasskeys(Array.isArray(data.passkeys) && data.passkeys.length > 0);

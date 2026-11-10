@@ -1712,12 +1712,36 @@ app.post('/api/auth/unlock-google', requireAuthAllowLocked, async (req, res) => 
 
 // List registered passkeys for current user
 app.get('/api/auth/passkey/list', requireAuthAllowLocked, (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    const rpId = getRpId(req);
+    const userIdBase64Url = Buffer.from(String(req.userRow.id), 'utf8').toString('base64url');
     db.all(
         "SELECT id, credential_id, device_name, transports, created_at, last_used_at FROM user_passkeys WHERE user_id = ? ORDER BY created_at DESC",
         [req.userRow.id],
         (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
-            res.json({ passkeys: rows || [] });
+            res.json({
+                passkeys: rows || [],
+                rpId,
+                userId: userIdBase64Url
+            });
+        }
+    );
+});
+
+// Rename a passkey
+app.put('/api/auth/passkey/:id', requireAuth, (req, res) => {
+    const passkeyId = req.params.id;
+    const label = String((req.body && req.body.deviceName) || '').trim().slice(0, 80);
+    if (!label) {
+        return res.status(400).json({ error: 'パスキーの名称を入力してください。' });
+    }
+    db.run(
+        "UPDATE user_passkeys SET device_name = ? WHERE id = ? AND user_id = ?",
+        [label, passkeyId, req.user.id],
+        function(err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ success: true, id: Number(passkeyId), device_name: label });
         }
     );
 });
@@ -1773,7 +1797,8 @@ app.post('/api/auth/passkey/register/options', requireAuthAllowLocked, (req, res
             excludeCredentials,
             authenticatorSelection: {
                 authenticatorAttachment: 'platform',
-                residentKey: 'preferred',
+                residentKey: 'required',
+                requireResidentKey: true,
                 userVerification: 'required'
             },
             attestation: 'none'
@@ -1838,7 +1863,15 @@ app.post('/api/auth/passkey/register/verify', requireAuthAllowLocked, async (req
 
         db.run(
             `INSERT INTO user_passkeys (user_id, credential_id, public_key, algorithm, sign_count, transports, device_name)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(credential_id) DO UPDATE SET
+                 user_id = excluded.user_id,
+                 public_key = excluded.public_key,
+                 algorithm = excluded.algorithm,
+                 sign_count = excluded.sign_count,
+                 transports = excluded.transports,
+                 device_name = excluded.device_name,
+                 created_at = CURRENT_TIMESTAMP`,
             [userRow.id, credential.id, publicKeySpki, Number(publicKeyAlg) || -7, signCount, transports, label],
             async function(dbErr) {
                 if (dbErr) {
@@ -1864,7 +1897,17 @@ app.post('/api/auth/passkey/register/verify', requireAuthAllowLocked, async (req
                         status_text: onlineStatus,
                         last_active_at: nowIso
                     });
-                    res.json({ success: true, user: updatedUser });
+                    db.all(
+                        "SELECT id, credential_id, device_name, transports, created_at, last_used_at FROM user_passkeys WHERE user_id = ? ORDER BY created_at DESC",
+                        [userRow.id],
+                        (listErr, passkeyRows) => {
+                            res.json({
+                                success: true,
+                                user: updatedUser,
+                                passkeys: (!listErr && passkeyRows) ? passkeyRows : []
+                            });
+                        }
+                    );
                 });
             }
         );
@@ -2830,6 +2873,26 @@ app.put('/api/users/:id/role', requirePermission('action:manage_roles'), (req, r
         } else {
             proceedWithUpdate();
         }
+    });
+});
+
+app.get('/api/users/:id/avatar', requireAuthAllowLocked, (req, res) => {
+    const targetId = req.params.id;
+    db.get("SELECT avatar_url FROM users WHERE id = ?", [targetId], (err, row) => {
+        if (err || !row || !row.avatar_url) {
+            return res.status(404).end();
+        }
+        const avatarUrl = row.avatar_url;
+        if (avatarUrl.startsWith('data:')) {
+            const match = avatarUrl.match(/^data:([^;]+);base64,(.+)$/);
+            if (!match) return res.status(404).end();
+            const mimeType = match[1] || 'image/png';
+            const buf = Buffer.from(match[2], 'base64');
+            res.set('Content-Type', mimeType);
+            res.set('Cache-Control', 'private, max-age=300');
+            return res.send(buf);
+        }
+        res.redirect(avatarUrl);
     });
 });
 
@@ -6086,7 +6149,8 @@ app.get('/api/dm/messages', requireAuth, (req, res) => {
 app.get('/api/dm/unread', requireAuth, (req, res) => {
     const loginUserId = req.user.id;
     const sql = `
-        SELECT m.id, m.sender_id, m.text, m.created_at, u.name as sender_name, u.avatar_url as sender_avatar
+        SELECT m.id, m.sender_id, m.text, m.created_at, u.name as sender_name,
+               CASE WHEN u.avatar_url LIKE 'data:%' THEN ('/api/users/' || u.id || '/avatar') ELSE u.avatar_url END as sender_avatar
         FROM dm_messages m
         JOIN users u ON m.sender_id = u.id
         WHERE m.receiver_id = ? AND m.is_read = 0 AND m.sender_type = 'user'

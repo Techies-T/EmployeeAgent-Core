@@ -67,7 +67,8 @@ router.get('/', async (req, res) => {
     const hasAllAccess = allowedPods.includes('*');
     
     let query = `
-        SELECT k.id, k.title, k.tags, k.author_id, k.pod_id, k.created_at, k.updated_at, u.name as author_name, u.avatar_url as author_avatar 
+        SELECT k.id, k.title, k.tags, k.author_id, k.pod_id, k.created_at, k.updated_at, u.name as author_name,
+               CASE WHEN u.avatar_url LIKE 'data:%' THEN ('/api/users/' || u.id || '/avatar') ELSE u.avatar_url END as author_avatar
         FROM knowledge_articles k
         LEFT JOIN users u ON k.author_id = u.id
         WHERE 1=1
@@ -158,7 +159,8 @@ router.get('/:id', async (req, res) => {
     const hasAllAccess = allowedPods.includes('*');
 
     db.get(`
-        SELECT k.*, u.name as author_name, u.avatar_url as author_avatar 
+        SELECT k.*, u.name as author_name,
+               CASE WHEN u.avatar_url LIKE 'data:%' THEN ('/api/users/' || u.id || '/avatar') ELSE u.avatar_url END as author_avatar
         FROM knowledge_articles k
         LEFT JOIN users u ON k.author_id = u.id
         WHERE k.id = ?

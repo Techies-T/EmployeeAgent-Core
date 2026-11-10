@@ -3,6 +3,31 @@
 本プロジェクトのすべての主要な変更履歴は本ファイルに記録されます。
 フォーマットは [Keep a Changelog](https://keepachangelog.com/ja/1.0.0/) に準拠し、バージョン番号は [セマンティック バージョニング](https://semver.org/lang/ja/) に従います。
 
+## [EA-Core v1.0.1] - 2026-11-10
+
+### 🛡️ Passkey (WebAuthn) 永続化・同期信頼性の強化 & メモリ最適化
+
+#### 🔐 WebAuthn Passkey 管理・Signal API 対応 (`server/index.cjs`, `src/apps/SystemSettings/tabs/GeneralTab.jsx`, `src/components/SessionLockModal.jsx`)
+- **Passkey 一覧取得の確実化とリトライ制御**:
+  - `GET /api/auth/passkey/list` に `Cache-Control: no-store, no-cache, must-revalidate, private` を付与し、`POST /api/auth/passkey/register/verify` レスポンスに最新のパスキー一覧を直接返却して即時反映。
+  - クライアント側（`GeneralTab.jsx`）に `cache: 'no-store'`・自動リトライ（最大3回）・手動再読み込みボタンを追加。
+- **Discoverable Credential（Resident Key）必須化と名称変更機能**:
+  - `POST /api/auth/passkey/register/options` に `residentKey: 'required'` を明示し、パスワードマネージャーへの保存を標準化。
+  - `PUT /api/auth/passkey/:id` エンドポイントおよび System Settings → General でのインライン名称変更 UI を追加。
+- **WebAuthn Signal API 連携**:
+  - `PublicKeyCredential.signalAllAcceptedCredentials` および `PublicKeyCredential.signalUnknownCredential` に対応し、アプリ側でのパスキー削除・一覧同期をブラウザのパスワードマネージャー（Google Password Manager / iCloud Keychain）へ自動通知。
+
+#### ⚡ API ペイロード軽量化と OOM クラッシュ防止 (`server/routes/knowledge.cjs`, `server/routes/geminiLive.cjs`, `server/index.cjs`, `docker-compose.staging.yml`)
+- **Base64 アバター画像のバイナリ配信エンドポイント分離**:
+  - `GET /api/knowledge`・`GET /api/dm/unread`・`GET /api/gemini-live/documents` 等で各レコードに重複結合されていた Base64 `avatar_url`（1件あたり約748KB）を専用エンドポイント `GET /api/users/:id/avatar`（`Cache-Control: private, max-age=300`）への参照に置換し、`GET /api/knowledge` のレスポンスサイズを約 23.3MB から約 3.3KB（99.98% 削減）に軽量化。
+  - ログイン直後の並列フェッチ時における Node.js ヒープ急増・502 Bad Gateway を解消。
+
+#### 🎙️ AI Live Concierge UI 改善 (`src/apps/GeminiLiveApp.jsx`, `server/routes/geminiLive.cjs`)
+- **左右フルハイト分割レイアウトと公開レポート HTML 解決**:
+  - Live Concierge 画面を左右分割レイアウトに刷新し、`published_reports` のインタラクティブ HTML/SVG ダッシュボード表示を統合。
+
+---
+
 ## [EA-Core v1.0.0] - 2026-11-06
 
 ### 🚀 EmployeeAgent-Core 1.0.0 初回メジャーリリース (ZTA MCP Analytics & Knowledge Platform)
