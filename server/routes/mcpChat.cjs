@@ -11,8 +11,16 @@ const mcpHarnessService = require('../services/mcpHarnessService.cjs');
 function getGeminiClient(apiKey) {
     return new GoogleGenAI({ 
         apiKey: apiKey || process.env.GEMINI_API_KEY,
-        httpOptions: { timeout: 180000 } // 180 seconds default timeout for interactions
+        httpOptions: { timeout: 600000 } // 600 seconds (10 min) so long streaming passes are not aborted at 180s; per-call timeouts handled by callInteractionsCreateWithTimeout and resetIdleTimer
     });
+}
+
+function extractUsageTokens(usageObj) {
+    if (!usageObj) return { input: 0, output: 0, thought: 0 };
+    const input = usageObj.promptTokenCount ?? usageObj.prompt_token_count ?? usageObj.total_input_tokens ?? usageObj.input_tokens ?? 0;
+    const output = usageObj.candidatesTokenCount ?? usageObj.candidates_token_count ?? usageObj.total_output_tokens ?? usageObj.output_tokens ?? 0;
+    const thought = usageObj.thoughtsTokenCount ?? usageObj.total_thought_tokens ?? usageObj.thought_tokens ?? 0;
+    return { input, output, thought };
 }
 
 // 経過時間に応じた詳細進捗メッセージの定義（ユーザーに現在の内部処理フェーズを明示）
@@ -513,6 +521,17 @@ ${toolDescriptions}`;
     currentInteractionId = interaction.id;
     currentEnvironmentId = interaction.environment_id;
 
+    let totalPromptTokens = 0;
+    let totalCandidateTokens = 0;
+    let totalThoughtTokens = 0;
+    const addInteractionUsage = (inter) => {
+        const u = extractUsageTokens(inter?.usage || inter?.usage_metadata || inter?.usageMetadata);
+        totalPromptTokens += u.input;
+        totalCandidateTokens += u.output;
+        totalThoughtTokens += u.thought;
+    };
+    addInteractionUsage(interaction);
+
     let turnCount = 0;
     let finalResponseText = "";
     let artifacts = [];
@@ -634,6 +653,7 @@ ${toolDescriptions}`;
                     currentInteractionId = interaction.id;
                     currentEnvironmentId = interaction.environment_id;
                     steps = interaction.steps || [];
+                    addInteractionUsage(interaction);
                 } catch (turnErr) {
                     if (artifacts.length > 0) {
                         console.warn(`[MCP Chat] ⚠️ Turn ${turnCount} interaction timed out after collecting ${artifacts.length} tool results (${turnErr.message}). Breaking out to streaming synthesis with auto-resume...`);
@@ -669,9 +689,6 @@ ${toolDescriptions}`;
             const synthesisPrompt = `あなたは高度なデータアナリスト兼システム管理者です。\nユーザーからの要求:\n「${message}」\n\nMCPツールにより取得された以下のデータベース/システム結果を参照してください:\n\n${artifactsContext}\n\n【指示】\n上記の取得実データを詳細に分析し、ユーザーの要求に完全に回答してください。\nインタラクティブなHTMLダッシュボード（必ず\`\`\`html ... \`\`\`コードブロック内）と詳細な解説を必ず日本語で出力してください。`;
 
             const cleanModel = modelName.replace(/^models\//, '');
-            const initialUsage = interaction?.usage || interaction?.usage_metadata || interaction?.usageMetadata || {};
-            let totalPromptTokens = initialUsage.promptTokenCount || initialUsage.prompt_token_count || initialUsage.total_input_tokens || initialUsage.input_tokens || 0;
-            let totalCandidateTokens = initialUsage.candidatesTokenCount || initialUsage.candidates_token_count || initialUsage.total_output_tokens || initialUsage.output_tokens || 0;
 
             const synthesisSystemInstruction = `${baseInstruction}\n\nNOTE FOR SYNTHESIS PHASE: All required MCP database tool executions have ALREADY been completed and their exact results are embedded directly in the user prompt below. Do NOT attempt to invoke any additional tools or report tools as unavailable. Generate the complete interactive HTML dashboard (\`\`\`html ... \`\`\`) and detailed Japanese analysis immediately from the provided query results.`;
 
@@ -691,6 +708,7 @@ ${toolDescriptions}`;
             };
 
             const runStreamingPass = async (contentsPayload, passLabel, passIndex) => {
+                const passStartLen = accumulatedText.length;
                 let lastReportedLength = accumulatedText.length;
                 let passUsage = null;
 
@@ -789,10 +807,19 @@ ${toolDescriptions}`;
                     }
                 })();
 
-                await streamPromise;
-                if (passUsage) {
-                    totalPromptTokens += (passUsage.promptTokenCount || 0);
-                    totalCandidateTokens += (passUsage.candidatesTokenCount || 0);
+                try {
+                    await streamPromise;
+                } finally {
+                    // ストリームが正常完了した場合も、万一途中で中断された場合も、必ずそのパスで消費したトークン数を計上する
+                    if (passUsage) {
+                        const u = extractUsageTokens(passUsage);
+                        totalPromptTokens += u.input;
+                        totalCandidateTokens += u.output;
+                        totalThoughtTokens += u.thought;
+                    } else if (accumulatedText.length > passStartLen) {
+                        const addedChars = accumulatedText.length - passStartLen;
+                        totalCandidateTokens += Math.ceil(addedChars / 2.5);
+                    }
                 }
             };
 
@@ -832,15 +859,30 @@ ${toolDescriptions}`;
                     onProgress(`🔄 途中までの生成データ (${accumulatedText.length.toLocaleString()} 文字) から自動再開中 (${contPass}/${MAX_CONTINUATION_PASSES})...`, turnCount + 1);
                 }
 
-                const tailSnippet = accumulatedText.slice(-600);
+                const tailSnippet = accumulatedText.slice(-800);
                 const beforeLen = accumulatedText.length;
+                const declaredFuncs = Array.from(new Set(
+                    (accumulatedText.match(/(?:function\s+([a-zA-Z0-9_$]+)\s*\(|(?:const|let|var|window\.)\s*([a-zA-Z0-9_$]+)\s*=\s*(?:function|\([^)]*\)\s*=>))/g) || [])
+                        .map(m => m.replace(/^(?:function|const|let|var|window\.)\s*/, '').replace(/\s*[=(].*$/, '').trim())
+                        .filter(Boolean)
+                ));
+                const declaredCanvases = Array.from(new Set(
+                    (accumulatedText.match(/<canvas[^>]*id=["']([^"']+)["']/gi) || [])
+                        .map(m => (m.match(/id=["']([^"']+)["']/i) || [])[1])
+                        .filter(Boolean)
+                ));
+                const contextHint = [
+                    declaredFuncs.length > 0 ? `※既出の<script>内で定義済みの関数名: ${declaredFuncs.join(', ')}（初期化時には未定義の関数名を新規に呼ばず、必ずこれら定義済みの関数名を呼び出してください）` : '',
+                    declaredCanvases.length > 0 ? `※既出のHTML内で定義済みの<canvas> ID: ${declaredCanvases.join(', ')}` : ''
+                ].filter(Boolean).join('\n');
+
                 const resumeContents = [
                     { role: 'user', parts: [{ text: synthesisPrompt }] },
                     { role: 'model', parts: [{ text: `... (中略: 先頭から ${accumulatedText.length} 文字出力済み) ...\n${tailSnippet}` }] },
                     {
                         role: 'user',
                         parts: [{
-                            text: `直前のあなたのHTMLダッシュボード出力は途中で中断されました（現在 ${accumulatedText.length} 文字までサーバーに保存されています）。\n最初からやり直さず、上記の末尾文字列:\n\`\`\`\n${tailSnippet.slice(-200)}\n\`\`\`\nの直後の文字から、重複させずに残りのHTML/SVG/scriptタグおよび閉じコードブロック（\`\`\`）を最後まで出力して完結させてください。前置きや挨拶は一切不要です。`
+                            text: `直前のあなたのHTMLダッシュボード出力は途中で中断されました（現在 ${accumulatedText.length} 文字までサーバーに保存されています）。\n${contextHint ? contextHint + '\n' : ''}最初からやり直さず、上記の末尾文字列:\n\`\`\`\n${tailSnippet.slice(-250)}\n\`\`\`\nの直後の文字から、重複させずに残りのHTML/SVG/scriptタグおよび閉じコードブロック（\`\`\`）を最後まで出力して完結させてください。前置きや挨拶は一切不要です。`
                         }]
                     }
                 ];
@@ -863,17 +905,19 @@ ${toolDescriptions}`;
             }
 
             finalResponseText = accumulatedText;
-            if (totalPromptTokens > 0 || totalCandidateTokens > 0) {
-                synthesizedUsageMetadata = {
-                    promptTokenCount: totalPromptTokens,
-                    candidatesTokenCount: totalCandidateTokens,
-                    totalTokenCount: totalPromptTokens + totalCandidateTokens
-                };
-            }
             console.log(`[MCP Chat] Streaming synthesis completed. Final text length: ${finalResponseText?.length || 0}`);
         } catch (synthErr) {
             console.error('[MCP Chat] Synthesis fallback error:', synthErr.message);
         }
+    }
+
+    if (totalPromptTokens > 0 || totalCandidateTokens > 0) {
+        synthesizedUsageMetadata = {
+            promptTokenCount: totalPromptTokens,
+            candidatesTokenCount: totalCandidateTokens,
+            thoughtsTokenCount: totalThoughtTokens,
+            totalTokenCount: totalPromptTokens + totalCandidateTokens + totalThoughtTokens
+        };
     }
 
     // 最終セーフティネット: 万が一合成すら失敗しても、取得データを要約して絶対に空文字にしない
@@ -882,8 +926,22 @@ ${toolDescriptions}`;
             artifacts.map((a, i) => `**[${i+1}] ${a.tool}**\n\`\`\`json\n${JSON.stringify(a.result, null, 2).substring(0, 1000)}\n\`\`\``).join('\n\n');
     }
 
-    // コードブロック自動修復ハーネス: トークン切れ等で未完結の ```html がある場合、安全に閉じる
+    // コードブロック自動修復ハーネス: トークン切れ等で未完結の ```html や Auto-Resume 時の初期化関数名不一致を安全に修復
     if (finalResponseText && typeof finalResponseText === 'string') {
+        // もしスクリプト内で initCharts が定義されているのに末尾で未定義の initDashboard を呼んでいる場合、ブリッジ関数を自動補完
+        if (
+            finalResponseText.includes('function initCharts') &&
+            finalResponseText.includes('initDashboard') &&
+            !finalResponseText.includes('function initDashboard') &&
+            !/\b(?:const|let|var)\s+initDashboard\b/.test(finalResponseText)
+        ) {
+            console.log('[MCP Chat] 🔧 Auto-bridging initDashboard() -> initCharts() in generated script...');
+            finalResponseText = finalResponseText.replace(
+                /function\s+initCharts\s*\(\)/,
+                'function initDashboard() { if (typeof renderGames === "function") { try { renderGames("cs"); } catch(e){} } if (typeof switchPlayerTab === "function") { try { switchPlayerTab("batters"); } catch(e){} } if (typeof initCharts === "function") { initCharts(); } }\n      function initCharts()'
+            );
+        }
+
         const lastHtmlMarker = finalResponseText.lastIndexOf('```html');
         if (lastHtmlMarker !== -1) {
             const afterHtml = finalResponseText.substring(lastHtmlMarker + 7);
