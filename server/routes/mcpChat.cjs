@@ -593,13 +593,17 @@ ${toolDescriptions}`;
                     }
                 }
 
-                // Deep-reasoning モデル (Argon / Carbon 等) が実データ取得クエリを完了した場合、
+                // Deep-reasoning モデル (Argon / Carbon 等) が必要な全テーブルの実データ取得クエリを完了した場合、
                 // 非ストリーミングの interactions.create で180秒タイムアウトするのを防ぎ、
                 // 即座にストリーミング＋途中再開（Auto-Resume）対応のダッシュボード合成へ移行する
                 const dataQueryCount = artifacts.filter(a => !['list_tables', 'describe_table'].includes(a.tool)).length;
                 const isDeepReasoningModel = modelLower.includes('argon') || modelLower.includes('carbon');
-                if (isDeepReasoningModel && dataQueryCount >= 2) {
-                    console.log(`[MCP Chat] 🚀 Deep-reasoning model (${modelName}) collected ${dataQueryCount} data queries (${artifacts.length} total tools). Switching directly to streaming dashboard synthesis with checkpoint auto-resume...`);
+                const requiredTables = ['batting_stats', 'pitching_stats', 'games', 'team_standings'].filter(tbl => msgLower.includes(tbl));
+                const queriedSqlText = artifacts.map(a => String(a.args?.query || a.args?.sql || '')).join(' ').toLowerCase();
+                const hasAllRequiredTables = requiredTables.every(tbl => queriedSqlText.includes(tbl));
+
+                if (isDeepReasoningModel && hasAllRequiredTables && ((turnCount >= 2 && dataQueryCount >= 3) || dataQueryCount >= 4)) {
+                    console.log(`[MCP Chat] 🚀 Deep-reasoning model (${modelName}) collected ${dataQueryCount} data queries across all required tables (${artifacts.length} total tools, turn ${turnCount}). Switching directly to streaming dashboard synthesis with checkpoint auto-resume...`);
                     break;
                 }
                 
@@ -666,8 +670,10 @@ ${toolDescriptions}`;
 
             const cleanModel = modelName.replace(/^models\//, '');
             const initialUsage = interaction?.usage || interaction?.usage_metadata || interaction?.usageMetadata || {};
-            let totalPromptTokens = initialUsage.promptTokenCount || initialUsage.prompt_token_count || initialUsage.input_tokens || 0;
-            let totalCandidateTokens = initialUsage.candidatesTokenCount || initialUsage.candidates_token_count || initialUsage.output_tokens || 0;
+            let totalPromptTokens = initialUsage.promptTokenCount || initialUsage.prompt_token_count || initialUsage.total_input_tokens || initialUsage.input_tokens || 0;
+            let totalCandidateTokens = initialUsage.candidatesTokenCount || initialUsage.candidates_token_count || initialUsage.total_output_tokens || initialUsage.output_tokens || 0;
+
+            const synthesisSystemInstruction = `${baseInstruction}\n\nNOTE FOR SYNTHESIS PHASE: All required MCP database tool executions have ALREADY been completed and their exact results are embedded directly in the user prompt below. Do NOT attempt to invoke any additional tools or report tools as unavailable. Generate the complete interactive HTML dashboard (\`\`\`html ... \`\`\`) and detailed Japanese analysis immediately from the provided query results.`;
 
             let accumulatedText = '';
             let maxMaxOutputTokens = MAX_OUTPUT_TOKENS;
@@ -695,7 +701,7 @@ ${toolDescriptions}`;
                             model: cleanModel,
                             contents: contentsPayload,
                             config: {
-                                systemInstruction: systemInstruction,
+                                systemInstruction: synthesisSystemInstruction,
                                 temperature: 0.2,
                                 maxOutputTokens: maxMaxOutputTokens
                             }
@@ -710,7 +716,7 @@ ${toolDescriptions}`;
                                 model: cleanModel,
                                 contents: contentsPayload,
                                 config: {
-                                    systemInstruction: systemInstruction,
+                                    systemInstruction: synthesisSystemInstruction,
                                     temperature: 0.2,
                                     maxOutputTokens: maxMaxOutputTokens
                                 }
@@ -748,7 +754,18 @@ ${toolDescriptions}`;
                             isFirstChunk = false;
 
                             const chunk = nextResult.value;
-                            const chunkText = chunk?.text || '';
+                            let chunkText = '';
+                            try {
+                                chunkText = chunk?.text || '';
+                            } catch {
+                                chunkText = '';
+                            }
+                            if (!chunkText && Array.isArray(chunk?.candidates?.[0]?.content?.parts)) {
+                                chunkText = chunk.candidates[0].content.parts
+                                    .filter(p => typeof p?.text === 'string' && !p.thought)
+                                    .map(p => p.text)
+                                    .join('');
+                            }
                             if (chunkText) {
                                 // 途中再開パス (passIndex > 0) の先頭で末尾スニペットの重複があれば除去
                                 if (passIndex > 0 && chunkText && accumulatedText.length > 100) {
