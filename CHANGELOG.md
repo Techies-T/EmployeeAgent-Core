@@ -3,9 +3,20 @@
 本プロジェクトのすべての主要な変更履歴は本ファイルに記録されます。
 フォーマットは [Keep a Changelog](https://keepachangelog.com/ja/1.0.0/) に準拠し、バージョン番号は [セマンティック バージョニング](https://semver.org/lang/ja/) に従います。
 
-## [EA-Core v1.0.1] - 2026-11-10
+## [EA-Core v1.0.1] - 2026-11-11
 
-### 🛡️ Passkey (WebAuthn) 永続化・同期信頼性の強化 & メモリ最適化
+### 🛡️ Passkey (WebAuthn) 永続化・Gemini 4 Argon / Carbon MCP 推論安定化・思考トークン課金可視化
+
+#### 🧠 Gemini 4 Argon / Carbon MCP マルチターン制御 & 思考トークン（Thinking Tokens）完全集計 (`server/routes/mcpChat.cjs`, `src/apps/McpChat.jsx`, `src/apps/Gemini.jsx`, `src/components/SaveToKnowledgeModal.jsx`)
+- **マルチターン SQL 照会の早期離脱防止と合成フェーズ専用ハーネス**:
+  - `gemini-4-argon` / `gemini-4-carbon` において、プロンプトで要求された全テーブル（`batting_stats`, `pitching_stats`, `games`, `team_standings`）の照会が完了してからストリーミング合成へ移行するよう `hasAllRequiredTables` 判定を追加。
+  - ストリーミング合成時のシステム指示（`synthesisSystemInstruction`）を分離し、ツール呼び出し完了後のテキスト・HTML 出力抑制を防止。
+- **長時間ストリーミングの 180 秒強制切断防止と Auto-Resume 関数名ブリッジ**:
+  - `getGeminiClient` の `httpOptions.timeout` を `600000`（10分）に拡張し、大規模 HTML ダッシュボード生成中の 180 秒強制 Abort を解消。
+  - Auto-Resume（チェックポイント自動再開）発動時に既出の `<script>` 関数名および `<canvas>` ID を引き継ぎ、万一 `initDashboard()` / `initCharts()` の呼称不一致が生じた場合も自動でブリッジ関数を補完する修復ハーネスを実装。
+- **入力・出力・思考トークン（`thoughtsTokenCount`）の100%正確な集計と UI 表示**:
+  - SQL ツール実行の全ターンおよび全ストリーミングパス（`finally` ブロック）で消費トークンを漏れなく累積合算。
+  - チャット画面・ナレッジ保存モーダル・ナレッジ記事ヘッダーに `入力 X / 出力 Y / 思考 Z (合計 W)` を明示し、API 課金実態（思考トークン＝出力トークン単価として課金）に合わせて DB の `output_tokens` カラムへ `出力 + 思考` を記録するよう改善。
 
 #### 🔐 WebAuthn Passkey 管理・Signal API 対応 (`server/index.cjs`, `src/apps/SystemSettings/tabs/GeneralTab.jsx`, `src/components/SessionLockModal.jsx`)
 - **Passkey 一覧取得の確実化とリトライ制御**:
