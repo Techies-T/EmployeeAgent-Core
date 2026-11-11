@@ -103,7 +103,8 @@ const SaveToKnowledgeModal = ({ isOpen, onClose, code, defaultTitle = '', contex
     const usage = context?.usage || null;
     const inputTokens = usage?.promptTokenCount || usage?.input_tokens || usage?.total_input_tokens || usage?.prompt_token_count || 0;
     const outputTokens = usage?.candidatesTokenCount || usage?.output_tokens || usage?.total_output_tokens || usage?.candidates_token_count || 0;
-    const totalTokens = usage?.totalTokenCount || usage?.total_token_count || (inputTokens + outputTokens);
+    const thoughtTokens = usage?.thoughtsTokenCount || usage?.total_thought_tokens || usage?.thought_tokens || 0;
+    const totalTokens = usage?.totalTokenCount || usage?.total_token_count || (inputTokens + outputTokens + thoughtTokens);
     const modelName = context?.modelName || 'Default Model';
     const promptText = context?.promptText || defaultTitle || '';
     const durationText = formatDurationText(context?.durationSeconds);
@@ -160,7 +161,8 @@ const SaveToKnowledgeModal = ({ isOpen, onClose, code, defaultTitle = '', contex
                     metricsSection += `- 🤖 **対象モデル:** ${modelName}\n`;
                 }
                 if (totalTokens > 0) {
-                    metricsSection += `- 🪙 **トークン消費:** 入力 ${inputTokens.toLocaleString()} / 出力 ${outputTokens.toLocaleString()} (合計 ${totalTokens.toLocaleString()})\n`;
+                    const thoughtPart = thoughtTokens > 0 ? ` / 思考 ${thoughtTokens.toLocaleString()}` : '';
+                    metricsSection += `- 🪙 **トークン消費:** 入力 ${inputTokens.toLocaleString()} / 出力 ${outputTokens.toLocaleString()}${thoughtPart} (合計 ${totalTokens.toLocaleString()})\n`;
                 }
                 metricsSection += '\n';
 
@@ -196,7 +198,7 @@ const SaveToKnowledgeModal = ({ isOpen, onClose, code, defaultTitle = '', contex
                 tags: tags.split(',').map(t => t.trim()).filter(Boolean),
                 pod_id: selectedPodId || null,
                 input_tokens: inputTokens,
-                output_tokens: outputTokens
+                output_tokens: outputTokens + thoughtTokens
             };
 
             const res = await fetch('/api/knowledge', {
@@ -327,7 +329,7 @@ const SaveToKnowledgeModal = ({ isOpen, onClose, code, defaultTitle = '', contex
                                 <div className="flex items-center justify-between text-[11px]">
                                     <span className="text-gray-400">🪙 トークン消費:</span>
                                     <span className="font-mono text-gray-200">
-                                        入力 {inputTokens.toLocaleString()} / 出力 {outputTokens.toLocaleString()} (計 {totalTokens.toLocaleString()})
+                                        入力 {inputTokens.toLocaleString()} / 出力 {outputTokens.toLocaleString()}{thoughtTokens > 0 ? ` / 思考 ${thoughtTokens.toLocaleString()}` : ''} (合計 {totalTokens.toLocaleString()})
                                     </span>
                                 </div>
                             )}

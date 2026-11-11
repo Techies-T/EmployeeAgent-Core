@@ -14,7 +14,8 @@ const renderContextUsage = (usage, isDark = true) => {
     if (!usage) return null;
     const promptTokens = usage.promptTokenCount ?? usage.prompt_token_count ?? usage.prompt_tokens ?? usage.input_tokens ?? usage.prompt_eval_count ?? 0;
     const responseTokens = usage.candidatesTokenCount ?? usage.candidates_token_count ?? usage.response_tokens ?? usage.candidates_tokens ?? usage.output_tokens ?? usage.eval_count ?? 0;
-    const totalTokens = usage.totalTokenCount ?? usage.total_token_count ?? usage.total_tokens ?? (promptTokens + responseTokens);
+    const thoughtTokens = usage.thoughtsTokenCount ?? usage.total_thought_tokens ?? usage.thought_tokens ?? 0;
+    const totalTokens = usage.totalTokenCount ?? usage.total_token_count ?? usage.total_tokens ?? (promptTokens + responseTokens + thoughtTokens);
 
     if (totalTokens === 0) return null;
 
@@ -26,9 +27,9 @@ const renderContextUsage = (usage, isDark = true) => {
             <span className="font-medium">
                 📊 コンテキスト使用量: <span className={`font-mono font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{totalTokens.toLocaleString()}</span> / {limit.toLocaleString()} tokens ({percentage}%)
             </span>
-            {(promptTokens > 0 || responseTokens > 0) && (
+            {(promptTokens > 0 || responseTokens > 0 || thoughtTokens > 0) && (
                 <span className={`text-[11px] font-mono ${isDark ? 'text-white/60' : 'text-gray-500'}`}>
-                    [入力: {promptTokens.toLocaleString()} / 出力: {responseTokens.toLocaleString()}]
+                    [入力: {promptTokens.toLocaleString()} / 出力: {responseTokens.toLocaleString()}{thoughtTokens > 0 ? ` / 思考: ${thoughtTokens.toLocaleString()}` : ''}]
                 </span>
             )}
         </div>
