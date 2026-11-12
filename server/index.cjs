@@ -5921,6 +5921,31 @@ app.use('/plugin-proxy/:widgetId', requireAuth, async (req, res) => {
             return res.status(403).json({ error: `ZTA Policy Denied: Access to plugin '${widgetId}' is not permitted.` });
         }
 
+        // Check local plugin directory first (/app/data/plugins or server/plugins)
+        const localPluginDist = [
+            path.resolve(process.env.DATA_DIR || '/app/data', 'plugins', widgetId, 'dist'),
+            path.resolve(process.env.DATA_DIR || '/app/data', 'plugins', widgetId),
+            path.resolve(__dirname, 'plugins', widgetId, 'dist'),
+            path.resolve(__dirname, 'plugins', widgetId)
+        ].find(p => fs.existsSync(path.join(p, 'index.html')));
+
+        if (localPluginDist) {
+            let reqPath = req.path.replace(/^\//, '');
+            if (!reqPath || reqPath === '') reqPath = 'index.html';
+            const filePath = path.join(localPluginDist, reqPath);
+            if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+                res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+                res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+                res.setHeader('X-Content-Type-Options', 'nosniff');
+                return res.sendFile(filePath);
+            } else if (fs.existsSync(path.join(localPluginDist, 'index.html'))) {
+                res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+                res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+                res.setHeader('X-Content-Type-Options', 'nosniff');
+                return res.sendFile(path.join(localPluginDist, 'index.html'));
+            }
+        }
+
         const pluginInfo = await pluginManager.getInstalledPluginRuntimeInfo(widgetId);
         if (!pluginInfo || !pluginInfo.serviceUrl) {
             return res.status(404).json({ error: `External plugin '${widgetId}' is not installed or serviceUrl is unconfigured.` });

@@ -25,7 +25,6 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       - zta-gateway
-      - virtual-office-plugin
     restart: unless-stopped
 
   # ============================================================================
@@ -121,6 +120,8 @@ services:
   # 6. Virtual Office PQC-Signed Plugin Service (Port 8091)
   # ============================================================================
   virtual-office-plugin:
+    profiles:
+      - plugin-service
     build:
       context: ../ea-widget-virtual-office
       dockerfile: Dockerfile
