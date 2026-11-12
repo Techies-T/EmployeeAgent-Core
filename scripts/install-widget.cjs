@@ -12,7 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { verifyPluginSignature } = require('../server/services/pluginSignatureVerifier.cjs');
+const { verifyPluginManifestSignature } = require('../server/services/pluginSignatureVerifier.cjs');
 
 async function main() {
     const args = process.argv.slice(2);
@@ -114,7 +114,7 @@ async function main() {
 
         // PQC ML-DSA-65 & Ed25519 デュアル署名 Gatekeeper 検証
         console.log('🛡️ Gatekeeper PQC ML-DSA-65 & Ed25519 署名検証を実行中...');
-        const verification = await verifyPluginSignature(manifest, { bundleDir });
+        const verification = await verifyPluginManifestSignature(manifest, { bundleDir });
 
         if (!verification.valid) {
             console.error(`🚨 【PQC署名検証不合格】${verification.error}`);

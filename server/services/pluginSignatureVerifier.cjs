@@ -86,7 +86,7 @@ function computeDirectoryFileHashes(rootDir) {
             const relPath = path.relative(rootDir, fullPath).split(path.sep).join('/');
             if (entry.isDirectory()) {
                 walk(fullPath);
-            } else if (entry.isFile() && relPath !== 'widget.manifest.json') {
+            } else if (entry.isFile() && relPath !== 'widget.manifest.json' && relPath !== 'manifest.json') {
                 const buf = fs.readFileSync(fullPath);
                 fileHashes[relPath] = crypto.createHash('sha256').update(buf).digest('hex');
             }
@@ -362,5 +362,6 @@ module.exports = {
     computeDirectoryFileHashes,
     buildSigningMessageBytes,
     getTrustedKeyRing,
-    verifyPluginManifestSignature
+    verifyPluginManifestSignature,
+    verifyPluginSignature: verifyPluginManifestSignature
 };
