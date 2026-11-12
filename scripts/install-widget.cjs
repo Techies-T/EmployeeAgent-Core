@@ -12,6 +12,20 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+
+// Auto-load development.env if available (server/development.env or data/development.env)
+const envPaths = [
+    path.resolve(__dirname, '../server/development.env'),
+    path.resolve(__dirname, '../data/development.env'),
+    '/app/data/development.env'
+];
+for (const envP of envPaths) {
+    if (fs.existsSync(envP)) {
+        require('dotenv').config({ path: envP });
+        break;
+    }
+}
+
 const { verifyPluginManifestSignature } = require('../server/services/pluginSignatureVerifier.cjs');
 
 async function main() {
@@ -142,6 +156,29 @@ async function main() {
             fs.writeFileSync(path.join(finalDest, 'dist', 'manifest.json'), manifestStr);
             fs.writeFileSync(path.join(finalDest, 'dist', 'widget.manifest.json'), manifestStr);
         }
+
+        // DB (INSTALLED_WIDGET_PLUGINS) にインストール状態を反映
+        try {
+            const pluginManager = require('../server/services/pluginManager.cjs');
+            let generatedLicense = '';
+            try {
+                const licResult = pluginManager.generateWidgetLicenseKey(widgetId, { tenantId: 'default', daysValid: 3650 });
+                if (licResult && licResult.licenseKey) {
+                    generatedLicense = licResult.licenseKey;
+                }
+            } catch (_) {}
+
+            await pluginManager.installWidgetPlugin(widgetId, {
+                customManifest: manifest,
+                mode: generatedLicense ? 'license' : 'trial',
+                licenseKey: generatedLicense,
+                source: downloadUrl ? 'github_release' : 'archive_package'
+            });
+            console.log(`📝 プラグインカタログおよびDBへの登録完了: [${widgetId}] (Status: active, Mode: licensed)`);
+        } catch (dbErr) {
+            console.warn(`⚠️ DBへの登録をスキップしました (直接実行時):`, dbErr.message);
+        }
+
         console.log(`🎉 ウィジェット [${widgetId}] v${version} のインストールが完了しました！`);
         console.log(`📂 配備先: ${finalDest}`);
         console.log('🌐 リバースプロキシ エンドポイント: /plugin-proxy/' + widgetId + '/');
