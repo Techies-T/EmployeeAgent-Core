@@ -73,21 +73,28 @@ async function main() {
             }
         }
 
-        // manifest.json の探索 (直下またはサブディレクトリ)
-        let manifestPath = path.join(workDir, 'manifest.json');
-        if (!fs.existsSync(manifestPath)) {
-            const subEntries = fs.readdirSync(workDir, { withFileTypes: true });
+        // manifest.json / widget.manifest.json の探索 (直下またはサブディレクトリまたはdist内)
+        function findManifest(dir) {
+            const candidates = ['widget.manifest.json', 'manifest.json', 'dist/widget.manifest.json', 'dist/manifest.json'];
+            for (const cand of candidates) {
+                const p = path.join(dir, cand);
+                if (fs.existsSync(p)) return p;
+            }
+            const subEntries = fs.readdirSync(dir, { withFileTypes: true });
             for (const ent of subEntries) {
-                if (ent.isDirectory() && fs.existsSync(path.join(workDir, ent.name, 'manifest.json'))) {
-                    workDir = path.join(workDir, ent.name);
-                    manifestPath = path.join(workDir, 'manifest.json');
-                    break;
+                if (ent.isDirectory() && ent.name !== 'node_modules') {
+                    for (const cand of candidates) {
+                        const p = path.join(dir, ent.name, cand);
+                        if (fs.existsSync(p)) return p;
+                    }
                 }
             }
+            return null;
         }
 
-        if (!fs.existsSync(manifestPath)) {
-            throw new Error(`manifest.json が見つかりません: ${workDir}`);
+        let manifestPath = findManifest(workDir);
+        if (!manifestPath) {
+            throw new Error(`manifest.json / widget.manifest.json が見つかりません: ${workDir}`);
         }
 
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -95,9 +102,19 @@ async function main() {
         const version = manifest.version;
         console.log(`🔍 ウィジェット検出: [${widgetId}] v${version} (${manifest.name})`);
 
+        // dist ディレクトリの判定
+        let bundleDir = path.join(workDir, 'dist');
+        if (!fs.existsSync(bundleDir)) {
+            if (fs.existsSync(path.join(path.dirname(manifestPath), 'index.html'))) {
+                bundleDir = path.dirname(manifestPath);
+            } else {
+                bundleDir = workDir;
+            }
+        }
+
         // PQC ML-DSA-65 & Ed25519 デュアル署名 Gatekeeper 検証
         console.log('🛡️ Gatekeeper PQC ML-DSA-65 & Ed25519 署名検証を実行中...');
-        const verification = await verifyPluginSignature(manifest, { bundleDir: path.join(workDir, 'dist') });
+        const verification = await verifyPluginSignature(manifest, { bundleDir });
 
         if (!verification.valid) {
             console.error(`🚨 【PQC署名検証不合格】${verification.error}`);
@@ -117,6 +134,14 @@ async function main() {
 
         // ファイルをコピー
         execSync(`cp -R "${workDir}/"* "${finalDest}/"`);
+        // 互換性のために manifest.json と widget.manifest.json の両方を直下および dist 内に同期
+        const manifestStr = JSON.stringify(manifest, null, 2);
+        fs.writeFileSync(path.join(finalDest, 'manifest.json'), manifestStr);
+        fs.writeFileSync(path.join(finalDest, 'widget.manifest.json'), manifestStr);
+        if (fs.existsSync(path.join(finalDest, 'dist'))) {
+            fs.writeFileSync(path.join(finalDest, 'dist', 'manifest.json'), manifestStr);
+            fs.writeFileSync(path.join(finalDest, 'dist', 'widget.manifest.json'), manifestStr);
+        }
         console.log(`🎉 ウィジェット [${widgetId}] v${version} のインストールが完了しました！`);
         console.log(`📂 配備先: ${finalDest}`);
         console.log('🌐 リバースプロキシ エンドポイント: /plugin-proxy/' + widgetId + '/');
