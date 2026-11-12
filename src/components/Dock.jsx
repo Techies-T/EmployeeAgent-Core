@@ -153,22 +153,47 @@ const Dock = ({ onAppClick, windows = [], user, config, customSkills = [] }) => 
         isCustom: true
     }));
 
+    // 外部プラグイン用の統一ベクターアイコン定義（Dock全体の線画・マテリアルデザインと完全統一）
+    const PLUGIN_VECTOR_ICONS = {
+        'virtual-office': (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: '28px', height: '28px', color: '#06b6d4' }}>
+                <rect x="4" y="2" width="16" height="20" rx="2" ry="2" />
+                <line x1="9" y1="22" x2="9" y2="16" />
+                <line x1="15" y1="22" x2="15" y2="16" />
+                <line x1="9" y1="16" x2="15" y2="16" />
+                <path d="M8 6h.01" />
+                <path d="M16 6h.01" />
+                <path d="M8 10h.01" />
+                <path d="M16 10h.01" />
+                <path d="M12 6h.01" />
+                <path d="M12 10h.01" />
+            </svg>
+        ),
+        default: (
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: '28px', height: '28px', color: '#06b6d4' }}>
+                <path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z" />
+            </svg>
+        )
+    };
+
     // config.installedWidgets のうち、ビルトイン apps に存在しない外部プラグインを動的に Dock アイコンとして構築
     const builtinAppIds = new Set(apps.map(a => a.id));
     const pluginApps = installedWidgetsList
         .filter(w => typeof w === 'object' && w.id && !builtinAppIds.has(w.id))
-        .map(plugin => ({
-            id: plugin.id,
-            name: plugin.name || plugin.id,
-            icon: plugin.icon && (plugin.icon.startsWith('http') || plugin.icon.startsWith('data:image'))
-                ? <img src={plugin.icon} alt={plugin.name} style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
-                : (
-                    <span style={{ fontSize: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '28px', height: '28px' }}>
-                        {plugin.icon || '🏢'}
-                    </span>
-                ),
-            isPlugin: true
-        }));
+        .map(plugin => {
+            const vectorIcon = PLUGIN_VECTOR_ICONS[plugin.iconType || plugin.id];
+            const resolvedIcon = vectorIcon
+                ? vectorIcon
+                : (plugin.icon && (plugin.icon.startsWith('http') || plugin.icon.startsWith('data:image'))
+                    ? <img src={plugin.icon} alt="" aria-hidden="true" style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
+                    : PLUGIN_VECTOR_ICONS.default);
+            return {
+                id: plugin.id,
+                name: plugin.id === 'virtual-office' ? 'バーチャルオフィス' : (plugin.name || plugin.id),
+                icon: resolvedIcon,
+                isPlugin: true
+            };
+        });
 
     const allApps = [...apps, ...dynamicApps, ...pluginApps];
 
@@ -274,9 +299,17 @@ const Dock = ({ onAppClick, windows = [], user, config, customSkills = [] }) => 
 
                             <motion.div
                                 whileHover={{ scale: 1.2, translateY: -10 }}
+                                role="button"
+                                aria-label={app.name}
                                 tabIndex={0}
                                 onFocus={() => setHoveredAppId(app.id)}
                                 onBlur={() => setHoveredAppId(null)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        handleAppClick(app.id);
+                                    }
+                                }}
                                 style={{
                                     width: '50px',
                                     height: '50px',

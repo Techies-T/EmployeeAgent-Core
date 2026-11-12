@@ -20,7 +20,8 @@ services:
       - PORT=8080
       - DB_TYPE=sqlite
       - ZTA_GATEWAY_URL=http://zta-mcp-gateway:8080
-      - VIRTUAL_OFFICE_PLUGIN_URL=http://virtual-office-plugin:8091
+      - VIRTUAL_OFFICE_PLUGIN_URL=http://host.docker.internal:8091
+      - EA_CORE_INTERNAL_URL=http://host.docker.internal:8080
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -129,11 +130,13 @@ services:
     container_name: ea-widget-virtual-office
     restart: unless-stopped
     ports:
-      - "8091:8091"
+      - "127.0.0.1:8091:8091"
+    env_file:
+      - server/development.env
     environment:
       - PORT=8091
       - DATA_DIR=/app/data
-      - EA_CORE_INTERNAL_URL=http://macosui:8080
+      - EA_CORE_INTERNAL_URL=http://host.docker.internal:8080
       - NODE_ENV=production
     volumes:
       - ${DATA_DIR:-./data}:/app/data
