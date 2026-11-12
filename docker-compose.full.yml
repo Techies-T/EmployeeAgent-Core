@@ -20,10 +20,12 @@ services:
       - PORT=8080
       - DB_TYPE=sqlite
       - ZTA_GATEWAY_URL=http://zta-mcp-gateway:8080
+      - VIRTUAL_OFFICE_PLUGIN_URL=http://virtual-office-plugin:8091
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       - zta-gateway
+      - virtual-office-plugin
     restart: unless-stopped
 
   # ============================================================================
@@ -112,6 +114,28 @@ services:
     environment:
       - ADMIN_PROCEDURES_HOST=0.0.0.0
       - ADMIN_PROCEDURES_PORT=33070
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================================================
+  # 6. Virtual Office PQC-Signed Plugin Service (Port 8091)
+  # ============================================================================
+  virtual-office-plugin:
+    build:
+      context: ../ea-widget-virtual-office
+      dockerfile: Dockerfile
+    image: techies-t/ea-widget-virtual-office:latest
+    container_name: ea-widget-virtual-office
+    restart: unless-stopped
+    ports:
+      - "8091:8091"
+    environment:
+      - PORT=8091
+      - DATA_DIR=/app/data
+      - EA_CORE_INTERNAL_URL=http://macosui:8080
+      - NODE_ENV=production
+    volumes:
+      - ${DATA_DIR:-./data}:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

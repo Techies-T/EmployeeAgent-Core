@@ -1,0 +1,66 @@
+# ============================================================================
+# Employee Agent Core - Dynamic MCP Routing & Security Harness (mcp-harness.yaml)
+# System Settings から直接編集・0秒ホットリロード可能（コンテナ再デプロイ不要）
+# ============================================================================
+version: "1.1"
+gateway_mode_default: "zta_gateway"
+public_direct_guard: "外部の公開情報MCPサーバー(Direct接続)へクエリを送信する際、社内の機密情報・顧客名・個人名(PII)・内部財務数値を絶対に引数に含めないでください。"
+
+domains:
+  knowledge_base:
+    category: "ナレッジベース"
+    icon: "📚"
+    isBuiltInKnowledge: true
+    match_patterns: ["knowledge","/api/mcp/knowledge"]
+    trigger_keywords: ["ナレッジ","マニュアル","社内規程","インプットトークン","アウトプットトークン","トークン","token","著者","author","投稿数","記事","クロス集計","crosstab"]
+    routing_instruction: "著者別・期間別の記事投稿数やインプット/アウトプットトークンのクロス集計では、必ず Knowledge Base MCP を呼び出してください。"
+
+  npb_baseball:
+    category: "プロ野球データ分析 (球団・選手DB)"
+    icon: "⚾"
+    match_patterns: ["npb","baseball","mariadb","/mcp/mariadb"]
+    trigger_keywords: ["野球","npb","選手","打率","防御率","ホームラン","本塁打","打点","セ・リーグ","パ・リーグ","球団","阪神","巨人","ソフトバンク","日本ハム","成績","年俸"]
+    routing_instruction: "NPBデータベースの照会では年度(2026等)とリーグ・球団名を確認してSQLを実行してください。ロールに球団スコープ(department_pod)や禁止カラム制限がある場合は厳守してください。"
+
+  digital_agency:
+    category: "行政手続・公開統計"
+    icon: "🏛️"
+    match_patterns: ["行政","procedures","/mcp/admin-procedures","estat"]
+    trigger_keywords: ["行政","手続","デジタル庁","申請","オンライン化","法令","省庁","統計","届出"]
+    routing_instruction: "デジタル庁・行政手続データの照会では対象省庁および手続種別を確認して集計してください。"
+
+  hr_database:
+    category: "人事・組織データベース"
+    icon: "👔"
+    match_patterns: ["人事","hr","personnel","/mcp/hr"]
+    trigger_keywords: ["人事","社員","従業員","部署","評価","異動","スキル","タレント","人員","給与","賞与"]
+    routing_instruction: "人事データの照会ではユーザーのロール権限（全社許可または所属部門限定）に従い、許可されたテーブル・カラムのみを参照してください。"
+
+  sales_forecast:
+    category: "売上・経営データ分析"
+    icon: "📊"
+    match_patterns: ["sales","売上","forecast","erp","/mcp/sales"]
+    trigger_keywords: ["売上","見込み","Q1","Q2","予算","達成率","パイプライン","商談","受注","利益"]
+    routing_instruction: "売上見込みや予実分析では対象期間（2026年Q1等）と事業ドメインを明確にして集計してください。"
+
+  catalog:
+    category: "データカタログ・GenUIメタ情報"
+    icon: "📑"
+    match_patterns: ["catalog","/mcp/catalog"]
+    trigger_keywords: ["カタログ","メタデータ","スキーマ一覧","テーブル定義"]
+    routing_instruction: "データカタログMCPを参照してスキーマやUI定義を確認します。"
+
+  google_workspace:
+    category: "Google Workspace (予定・Todo)"
+    icon: "📅"
+    match_patterns: ["workspace","calendar","todo","tasks","gmail","google"]
+    trigger_keywords: ["カレンダー","予定","ミーティング","会議","todo","タスク","gmail","スケジュール"]
+    routing_instruction: "Google Workspace の予定・タスク操作を行います。タイムゾーンは Asia/Tokyo を標準とします。"
+
+  local_ai:
+    category: "ローカルAI推論"
+    icon: "🤖"
+    isBuiltInGemma: true
+    match_patterns: ["gemma","/api/mcp/gemma"]
+    trigger_keywords: ["gemma","ローカルai","ローカル推論"]
+    routing_instruction: "ローカルAI推論サーバーを呼び出します。"

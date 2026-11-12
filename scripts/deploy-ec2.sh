@@ -90,6 +90,12 @@ sudo chown -R "$(whoami)":"$(whoami)" "$REPO_DIR" 2>/dev/null || true
 echo "=================================================="
 echo "🚀 [Step 3/5] Pull Latest Code (VUP)"
 echo "=================================================="
+TARGET_REPO="${TARGET_REPO:-https://github.com/Techies-T/EmployeeAgent-Core.git}"
+CURRENT_ORIGIN=$(git remote get-url origin 2>/dev/null || true)
+if [ -n "$CURRENT_ORIGIN" ] && [ "$CURRENT_ORIGIN" != "$TARGET_REPO" ]; then
+    echo "🔄 Updating remote origin from $CURRENT_ORIGIN to $TARGET_REPO..."
+    git remote set-url origin "$TARGET_REPO"
+fi
 git fetch origin --tags -f
 git checkout main
 git pull origin main

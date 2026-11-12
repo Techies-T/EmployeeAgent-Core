@@ -127,23 +127,7 @@ const Dock = ({ onAppClick, windows = [], user, config, customSkills = [] }) => 
                     <path d="M8 22h8" />
                 </svg>
             )
-        },
-        {
-            id: 'virtual-office', name: 'バーチャルオフィス', icon: (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: '28px', height: '28px', color: '#06b6d4' }}>
-                    <rect x="4" y="2" width="16" height="20" rx="2" ry="2" />
-                    <line x1="9" y1="22" x2="9" y2="16" />
-                    <line x1="15" y1="22" x2="15" y2="16" />
-                    <line x1="9" y1="16" x2="15" y2="16" />
-                    <path d="M8 6h.01" />
-                    <path d="M16 6h.01" />
-                    <path d="M8 10h.01" />
-                    <path d="M16 10h.01" />
-                    <path d="M12 6h.01" />
-                    <path d="M12 10h.01" />
-                </svg>
-            )
-        },
+        }
     ];
 
     const handleAppClick = (appId) => {
@@ -169,11 +153,33 @@ const Dock = ({ onAppClick, windows = [], user, config, customSkills = [] }) => 
         isCustom: true
     }));
 
-    const allApps = [...apps, ...dynamicApps];
+    // config.installedWidgets のうち、ビルトイン apps に存在しない外部プラグインを動的に Dock アイコンとして構築
+    const builtinAppIds = new Set(apps.map(a => a.id));
+    const pluginApps = installedWidgetsList
+        .filter(w => typeof w === 'object' && w.id && !builtinAppIds.has(w.id))
+        .map(plugin => ({
+            id: plugin.id,
+            name: plugin.name || plugin.id,
+            icon: plugin.icon && (plugin.icon.startsWith('http') || plugin.icon.startsWith('data:image'))
+                ? <img src={plugin.icon} alt={plugin.name} style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
+                : (
+                    <span style={{ fontSize: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '28px', height: '28px' }}>
+                        {plugin.icon || '🏢'}
+                    </span>
+                ),
+            isPlugin: true
+        }));
+
+    const allApps = [...apps, ...dynamicApps, ...pluginApps];
 
     const visibleApps = allApps.filter(app => {
         if (app.id === 'settings') return true; // Settings is universally available
         if (app.isCustom) return true;
+        if (app.isPlugin) {
+            if (widgetLevels[app.id] === 'none') return false;
+            const prefix = 'app:';
+            return allowedWidgets.includes('*') || allowedWidgets.includes(`${prefix}${app.id}`) || allowedWidgets.includes(app.id);
+        }
         // 1. Check if widget is installed in EmployeeAgent-Core plugin manager
         if (installedIdsSet && !installedIdsSet.has(app.id)) {
             return false;

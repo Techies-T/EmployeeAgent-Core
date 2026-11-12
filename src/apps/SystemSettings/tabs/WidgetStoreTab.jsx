@@ -82,6 +82,9 @@ const WidgetStoreTab = ({
     const [capabilities, setCapabilities] = useState([]);
     const [loading, setLoading] = useState(true);
     const [licenseInputMap, setLicenseInputMap] = useState({});
+    const [serviceUrlInputMap, setServiceUrlInputMap] = useState({});
+    const [customManifestUrl, setCustomManifestUrl] = useState('');
+    const [installingCustom, setInstallingCustom] = useState(false);
     const [generatedKeyInfo, setGeneratedKeyInfo] = useState(null);
     const [activeConfigWidget, setActiveConfigWidget] = useState(null);
     const dialogRef = useRef(null);
@@ -159,6 +162,7 @@ const WidgetStoreTab = ({
 
     const handleInstallWidget = async (widgetId, mode = 'trial') => {
         const licenseKey = licenseInputMap[widgetId] || '';
+        const serviceUrl = (serviceUrlInputMap[widgetId] || '').trim();
         if (mode === 'licensed' && !licenseKey.trim()) {
             alert('ライセンスキー（EA-LIC-... または EA-PRO-...）を入力してください。');
             return;
@@ -167,7 +171,12 @@ const WidgetStoreTab = ({
             const res = await fetch('/api/core/plugins/install', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ widgetId, mode, licenseKey: licenseKey.trim() })
+                body: JSON.stringify({
+                    widgetId,
+                    mode,
+                    licenseKey: licenseKey.trim(),
+                    serviceUrl: serviceUrl || undefined
+                })
             });
             const data = await res.json();
             if (!res.ok) {
@@ -182,6 +191,38 @@ const WidgetStoreTab = ({
         } catch (err) {
             console.error('Install widget failed:', err);
             alert('ウィジェットのインストールに失敗しました。');
+        }
+    };
+
+    const handleInstallByManifestUrl = async (e) => {
+        e.preventDefault();
+        if (!customManifestUrl.trim()) return;
+        setInstallingCustom(true);
+        try {
+            const res = await fetch('/api/core/plugins/install', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    mode: 'trial',
+                    manifestUrl: customManifestUrl.trim()
+                })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                alert(data.error || 'マニフェストからのプラグイン導入に失敗しました。');
+                return;
+            }
+            setCustomManifestUrl('');
+            setInstalled(data.installedWidgets || data.installed || []);
+            setAvailableAddons(data.availableAddons || []);
+            setCapabilities(data.capabilities || []);
+            if (onPluginsChanged) onPluginsChanged(data);
+            window.dispatchEvent(new Event('plugins-updated'));
+        } catch (err) {
+            console.error('Custom manifest install failed:', err);
+            alert('マニフェストURLへの接続に失敗しました。');
+        } finally {
+            setInstallingCustom(false);
         }
     };
 
@@ -346,6 +387,17 @@ const WidgetStoreTab = ({
                                         <p className="text-xs text-gray-600 mt-2 leading-relaxed">
                                             {widget.description || widget.shortDescription}
                                         </p>
+                                        {widget.signatureVerification?.valid && (
+                                            <div className="mt-2.5 p-2 rounded-lg bg-emerald-50/90 border border-emerald-200 flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-emerald-900">
+                                                <span className="font-bold flex items-center gap-1">
+                                                    <span>🛡️</span>
+                                                    <span>PQC Hybrid Verified ({widget.signatureVerification.pqcAlgorithm} + {widget.signatureVerification.classicalAlgorithm})</span>
+                                                </span>
+                                                <span className="font-mono text-emerald-700">
+                                                    SHA256: {String(widget.signatureVerification.canonicalPayloadSha256 || '').substring(0, 12)}…
+                                                </span>
+                                            </div>
+                                        )}
                                     </div>
 
                                     <div className="pt-3 border-t border-gray-200/70 flex items-center justify-between gap-2">
@@ -462,6 +514,22 @@ const WidgetStoreTab = ({
                                         </div>
 
                                         <div className="flex flex-col gap-2 min-w-[280px] pt-3 lg:pt-0 lg:pl-4 lg:border-l border-gray-200">
+                                            {addon.isExternalPlugin && (
+                                                <div className="space-y-1">
+                                                    <div className="flex items-center justify-between">
+                                                        <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1">
+                                                            🛡️ PQC 署名検証必須 (ML-DSA-65 + Ed25519)
+                                                        </span>
+                                                    </div>
+                                                    <input
+                                                        type="url"
+                                                        value={serviceUrlInputMap[addon.id] ?? (addon.defaultServiceUrl || '')}
+                                                        onChange={(e) => setServiceUrlInputMap(prev => ({ ...prev, [addon.id]: e.target.value }))}
+                                                        placeholder="http://localhost:8091 (独立プラグインURL)"
+                                                        className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-[11px] font-mono bg-slate-50 focus:bg-white focus:outline-none focus:border-indigo-500"
+                                                    />
+                                                </div>
+                                            )}
                                             <button
                                                 type="button"
                                                 onClick={() => handleInstallWidget(addon.id, 'trial')}
@@ -503,6 +571,38 @@ const WidgetStoreTab = ({
                     </div>
                 )}
             </div>
+
+            {/* Section 3: Direct External Widget Manifest URL Registration (Zero Core Rebuild) */}
+            {canManageSettings && (
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                    <div className="mb-3">
+                        <h3 className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                            <span>🔗</span>
+                            <span>3. 独立ウィジェット・マニフェストURL直接登録 (EA-Widget Plugin Protocol)</span>
+                        </h3>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                            別プロジェクトとして独立開発・起動したウィジェットの <code className="font-mono bg-gray-100 px-1 rounded">widget.manifest.json</code> URL を指定して直接プラグインします。当社の PQC ハイブリッド署名（Ed25519 + NIST FIPS 204 ML-DSA-65）が付与されていない不正ウィジェットは自動的にブロックされます。
+                        </p>
+                    </div>
+                    <form onSubmit={handleInstallByManifestUrl} className="flex flex-col sm:flex-row gap-2">
+                        <input
+                            type="url"
+                            required
+                            value={customManifestUrl}
+                            onChange={(e) => setCustomManifestUrl(e.target.value)}
+                            placeholder="例: http://localhost:8091/widget.manifest.json"
+                            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono bg-white focus:outline-none focus:border-indigo-500"
+                        />
+                        <button
+                            type="submit"
+                            disabled={installingCustom}
+                            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition"
+                        >
+                            {installingCustom ? '署名検証中...' : '🛡️ PQC署名を検証してプラグイン導入'}
+                        </button>
+                    </form>
+                </div>
+            )}
 
             {/* Encapsulated Widget Configuration Dialog (Modern Web Guidance light-dismiss-a-dialog compliant) */}
             <dialog

@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const db = require('../db.cjs');
+const auditDb = require('../auditDb.cjs');
+const signatureVerifier = require('./pluginSignatureVerifier.cjs');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..');
 const PLUGINS_DIR = path.join(DATA_DIR, 'plugins');
@@ -234,6 +236,19 @@ const WIDGET_CATALOG = [
         category: 'workspace_comm',
         iconType: 'virtual-office',
         defaultInstalled: false,
+        isExternalPlugin: true,
+        defaultServiceUrl: process.env.VIRTUAL_OFFICE_PLUGIN_URL || 'http://localhost:8091',
+        entrypoints: {
+            main: '/index.html?view=office',
+            subViews: {
+                'dm-chat': {
+                    path: '/index.html?view=dm-chat',
+                    defaultWidth: 380,
+                    defaultHeight: 500
+                }
+            },
+            backgroundUnreadApi: '/api/vo/dm/unread'
+        },
         tier: 'paid_addon',
         pricing: {
             model: 'monthly_per_tenant',
@@ -241,8 +256,8 @@ const WIDGET_CATALOG = [
             trialDays: 14,
             label: '¥20,000 / 月 (14日間無料トライアル可)'
         },
-        shortDescription: 'リモート環境でもチームの在席状況・業務ステータスを可視化し、多言語自動翻訳付きDMチャットを提供',
-        salesPitch: '誰がどのルーム（会議室・集中ブース）にいるかをリアルタイムに把握し、ワンクリックで声をかけられるバーチャルオフィス空間を追加します。',
+        shortDescription: 'リモート環境でもチームの在席状況・業務ステータスを可視化し、多言語自動翻訳付きDMチャットを提供（独立プラグイン）',
+        salesPitch: '誰がどのルーム（会議室・集中ブース）にいるかをリアルタイムに把握し、ワンクリックで声をかけられるバーチャルオフィス空間を、EA-Core本体と完全分離されたPQC署名済みプラグインとして追加します。',
         windowConfig: {
             defaultWidth: 860,
             defaultHeight: 620,
@@ -257,11 +272,12 @@ const WIDGET_CATALOG = [
         permissionsSchema: {
             levels: {
                 none: { label: '不可', description: '利用不可' },
-                read: { label: 'フロア閲覧のみ', description: 'メンバーの在席状況確認のみ' },
+                read: { label: 'フロア閲覧のみ', description: 'メンバーの在席状況確認のみ（移動・DM不可）' },
                 execute: { label: '入室・DM可', description: 'ルーム移動・ステータス変更・DM送受信が可能' },
-                manage: { label: '管理', description: 'ルーム構成やオフィス設定の管理が可能' }
+                manage: { label: '管理', description: 'ルーム構成・AIアシスタント就業ルールの管理が可能' }
             },
-            legacyWidgetId: 'app:virtual-office'
+            legacyWidgetId: 'app:virtual-office',
+            manageActions: ['action:manage_assistant_rules']
         },
         hasWidgetSettings: false
     },
@@ -621,8 +637,19 @@ async function getFullPluginCatalog() {
             }
         }
 
+        const effectiveServiceUrl = state.serviceUrl || widget.defaultServiceUrl || null;
+        const isExtPlugin = Boolean(widget.isExternalPlugin || widget.isExternalPackage || effectiveServiceUrl);
+        const proxyBasePath = isExtPlugin ? `/plugin-proxy/${widget.id}` : null;
+        const resolvedEntrypoints = state.verifiedManifest?.entrypoints || widget.entrypoints || null;
+
         return {
             ...widget,
+            isExternalPlugin: isExtPlugin,
+            serviceUrl: effectiveServiceUrl,
+            manifestUrl: state.manifestUrl || (effectiveServiceUrl ? `${effectiveServiceUrl.replace(/\/$/, '')}/widget.manifest.json` : null),
+            proxyBasePath,
+            entrypoints: resolvedEntrypoints,
+            signatureVerification: state.signatureVerification || null,
             packageName: widget.packageId || widget.packageName || `com.techies.widget.${widget.id}`,
             description: widget.shortDescription || widget.description || '',
             pricingLabel: typeof widget.pricing === 'object' ? (widget.pricing?.label || '') : (widget.pricing || ''),
@@ -658,11 +685,111 @@ async function getFullPluginCatalog() {
 }
 
 /**
- * Install or activate a widget plugin (Option B: writes package manifest to /app/data/plugins/<id>/widget.manifest.json and updates DB state)
+ * Fetch and verify remote widget.manifest.json via PQC Hybrid Gatekeeper (Ed25519 + NIST FIPS 204 ML-DSA-65)
+ */
+async function fetchAndVerifyExternalManifest(targetManifestUrl, req = null) {
+    let remoteManifest;
+    try {
+        const res = await fetch(targetManifestUrl);
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status} ${res.statusText}`);
+        }
+        remoteManifest = await res.json();
+    } catch (fetchErr) {
+        throw new Error(`独立ウィジェットサーバーからマニフェスト (${targetManifestUrl}) を取得できませんでした。ウィジェットサーバーが起動しているか確認してください: ${fetchErr.message}`);
+    }
+
+    const verification = await signatureVerifier.verifyPluginManifestSignature(remoteManifest);
+    if (!verification.valid) {
+        await auditDb.logEvent({
+            userId: req?.user?.id || null,
+            userEmail: req?.user?.email || null,
+            eventType: 'plugin_signature_blocked',
+            action: 'BLOCKED_UNSIGNED_OR_TAMPERED_PLUGIN',
+            status: 'blocked',
+            req,
+            details: {
+                manifestUrl: targetManifestUrl,
+                error: verification.error,
+                ...(verification.details || {})
+            }
+        }).catch(() => {});
+        throw new Error(`【PQC署名検証エラー】${verification.error}`);
+    }
+
+    return {
+        remoteManifest,
+        signatureVerification: {
+            valid: true,
+            ...verification.details
+        }
+    };
+}
+
+/**
+ * Install or activate a widget plugin (Option B: verifies PQC Hybrid Signature for external plugins, writes manifest to /app/data/plugins/<id>/widget.manifest.json and updates DB state)
  */
 async function installWidgetPlugin(widgetId, options = {}) {
-    const { mode = 'install', licenseKey = '', customManifest = null } = options;
-    const catalogItem = WIDGET_CATALOG.find(w => w.id === widgetId) || customManifest;
+    const {
+        mode = 'install',
+        licenseKey = '',
+        customManifest = null,
+        manifestUrl = '',
+        serviceUrl = '',
+        req = null
+    } = options;
+
+    let resolvedManifest = customManifest;
+    let signatureVerification = null;
+    let resolvedServiceUrl = serviceUrl ? serviceUrl.replace(/\/$/, '') : '';
+    let resolvedManifestUrl = manifestUrl ? manifestUrl.trim() : '';
+
+    let catalogItem = widgetId ? WIDGET_CATALOG.find(w => w.id === widgetId) : null;
+
+    // Determine if this plugin is an external independent project requiring PQC signature verification
+    if (!resolvedManifest && (resolvedManifestUrl || resolvedServiceUrl || catalogItem?.isExternalPlugin)) {
+        if (!resolvedServiceUrl && resolvedManifestUrl) {
+            const parsedUrl = new URL(resolvedManifestUrl);
+            resolvedServiceUrl = `${parsedUrl.protocol}//${parsedUrl.host}`;
+        } else if (!resolvedServiceUrl && catalogItem?.defaultServiceUrl) {
+            resolvedServiceUrl = catalogItem.defaultServiceUrl.replace(/\/$/, '');
+        }
+        if (!resolvedManifestUrl && resolvedServiceUrl) {
+            resolvedManifestUrl = `${resolvedServiceUrl}/widget.manifest.json`;
+        }
+
+        const verified = await fetchAndVerifyExternalManifest(resolvedManifestUrl, req);
+        resolvedManifest = verified.remoteManifest;
+        signatureVerification = verified.signatureVerification;
+        if (!widgetId) {
+            widgetId = resolvedManifest.id;
+        }
+        if (!catalogItem) {
+            catalogItem = WIDGET_CATALOG.find(w => w.id === widgetId) || resolvedManifest;
+        }
+    } else if (resolvedManifest) {
+        // Direct manifest object passed: MUST still pass PQC Hybrid Signature verification!
+        const verification = await signatureVerifier.verifyPluginManifestSignature(resolvedManifest);
+        if (!verification.valid) {
+            await auditDb.logEvent({
+                userId: req?.user?.id || null,
+                userEmail: req?.user?.email || null,
+                eventType: 'plugin_signature_blocked',
+                action: 'BLOCKED_UNSIGNED_CUSTOM_MANIFEST',
+                status: 'blocked',
+                req,
+                details: { error: verification.error, ...(verification.details || {}) }
+            }).catch(() => {});
+            throw new Error(`【PQC署名検証エラー】${verification.error}`);
+        }
+        signatureVerification = {
+            valid: true,
+            ...verification.details
+        };
+        if (!widgetId) widgetId = resolvedManifest.id;
+        if (!catalogItem) catalogItem = resolvedManifest;
+    }
+
     if (!catalogItem) {
         throw new Error(`指定されたウィジェット (${widgetId}) はカタログに存在しません。`);
     }
@@ -673,14 +800,14 @@ async function installWidgetPlugin(widgetId, options = {}) {
     let trialExpiresAt = null;
     let licenseKeyPreview = null;
 
-    if (catalogItem.tier === 'basic_included' || catalogItem.tier === 'utility_addon') {
+    if (catalogItem.tier === 'basic_included' || catalogItem.tier === 'utility_addon' || !catalogItem.tier) {
         licenseStatus = 'included';
     } else if (mode === 'trial') {
         const trialDays = catalogItem.pricing?.trialDays || 14;
         const expDate = new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000);
         licenseStatus = 'trial';
         trialExpiresAt = expDate.toISOString();
-    } else if (mode === 'license' || licenseKey) {
+    } else if (mode === 'license' || mode === 'licensed' || licenseKey) {
         const verification = verifyWidgetLicenseKey(licenseKey, widgetId);
         if (!verification.valid) {
             throw new Error(verification.error || '無効なライセンスキーです。');
@@ -690,6 +817,18 @@ async function installWidgetPlugin(widgetId, options = {}) {
         licenseKeyPreview = `${licenseKey.substring(0, 10)}...${licenseKey.substring(licenseKey.length - 6)}`;
     }
 
+    const mergedManifestToPersist = {
+        ...catalogItem,
+        ...(resolvedManifest || {}),
+        id: widgetId,
+        isExternalPlugin: Boolean(catalogItem.isExternalPlugin || resolvedServiceUrl),
+        serviceUrl: resolvedServiceUrl || catalogItem.defaultServiceUrl || null,
+        manifestUrl: resolvedManifestUrl || null,
+        signatureVerification,
+        installedAt: now.toISOString(),
+        licenseStatus
+    };
+
     // Write physical package manifest to /app/data/plugins/<widgetId>/widget.manifest.json (Option B persistence)
     try {
         const targetDir = path.join(PLUGINS_DIR, widgetId);
@@ -698,11 +837,7 @@ async function installWidgetPlugin(widgetId, options = {}) {
         }
         fs.writeFileSync(
             path.join(targetDir, 'widget.manifest.json'),
-            JSON.stringify({
-                ...catalogItem,
-                installedAt: now.toISOString(),
-                licenseStatus
-            }, null, 2),
+            JSON.stringify(mergedManifestToPersist, null, 2),
             'utf8'
         );
     } catch (fsErr) {
@@ -715,7 +850,11 @@ async function installWidgetPlugin(widgetId, options = {}) {
         licenseStatus,
         trialExpiresAt,
         licenseKeyPreview,
-        source: customManifest ? 'uploaded_package' : 'dynamic_registry'
+        serviceUrl: resolvedServiceUrl || catalogItem.defaultServiceUrl || null,
+        manifestUrl: resolvedManifestUrl || null,
+        verifiedManifest: resolvedManifest || null,
+        signatureVerification,
+        source: resolvedManifest ? 'pqc_signed_external_plugin' : 'dynamic_registry'
     };
 
     await saveInstalledPluginsMap(installedMap);
@@ -848,6 +987,18 @@ async function hasCapability(capabilityId) {
     return catalog.capabilities.includes(capabilityId);
 }
 
+/**
+ * Retrieve runtime target URL & verified state for an installed external plugin (used by /plugin-proxy/:widgetId)
+ */
+async function getInstalledPluginRuntimeInfo(widgetId) {
+    const catalog = await getFullPluginCatalog();
+    const target = catalog.installedWidgets.find(w => w.id === widgetId);
+    if (!target || !target.isExternalPlugin || !target.serviceUrl) {
+        return null;
+    }
+    return target;
+}
+
 module.exports = {
     WIDGET_CATALOG,
     DEFAULT_INSTALLED_IDS,
@@ -859,5 +1010,6 @@ module.exports = {
     generateWidgetLicenseKey,
     verifyWidgetLicenseKey,
     isWidgetInstalled,
-    hasCapability
+    hasCapability,
+    getInstalledPluginRuntimeInfo
 };

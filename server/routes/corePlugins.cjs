@@ -111,18 +111,22 @@ router.post('/plugins/install', async (req, res) => {
         return res.status(403).json({ error: 'ウィジェット管理権限が必要です' });
     }
 
-    const { widgetId, mode = 'install', licenseKey = '', customManifest = null } = req.body;
-    if (!widgetId && !customManifest?.id) {
-        return res.status(400).json({ error: 'widgetId is required' });
+    const { widgetId, mode = 'install', licenseKey = '', customManifest = null, manifestUrl = '', serviceUrl = '' } = req.body;
+    if (!widgetId && !customManifest?.id && !manifestUrl) {
+        return res.status(400).json({ error: 'widgetId または manifestUrl が必要です' });
     }
 
     try {
-        const targetId = widgetId || customManifest.id;
+        const targetId = widgetId || customManifest?.id || '';
         const updatedCatalog = await pluginManager.installWidgetPlugin(targetId, {
             mode,
             licenseKey,
-            customManifest
+            customManifest,
+            manifestUrl,
+            serviceUrl,
+            req
         });
+        const installedId = targetId || (updatedCatalog.installedWidgets?.[updatedCatalog.installedWidgets.length - 1]?.id) || 'plugin';
 
         await auditDb.logEvent({
             userId: req.user?.id || null,
@@ -131,12 +135,12 @@ router.post('/plugins/install', async (req, res) => {
             action: 'POST /api/core/plugins/install',
             status: 'success',
             req,
-            details: { widgetId: targetId, mode }
+            details: { widgetId: installedId, mode, manifestUrl: manifestUrl || undefined }
         });
 
         res.json({
             success: true,
-            message: `ウィジェット「${targetId}」をインストールしました`,
+            message: `ウィジェット「${installedId}」を署名検証の上インストールしました`,
             ...updatedCatalog
         });
     } catch (err) {

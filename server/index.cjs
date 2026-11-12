@@ -829,7 +829,11 @@ app.use('/api/mcp/meta', requireWidgetAccess('app:mcp-chat'), require('./routes/
 app.use('/api/local-rag', requireAuth, require('./routes/localRag.cjs'));
 app.use('/api/gemini-live', requireAuth, require('./routes/geminiLive.cjs').router);
 app.use('/api/zta/audit', requireAuth, require('./routes/ztaAudit.cjs'));
-app.use('/api/core', requireAuthIfConfigured, require('./routes/corePlugins.cjs'));
+app.use('/api/core', (req, res, next) => {
+    // /api/core/host/* は RFC 8693 Agent JWT で保護されるため、セッション Cookie 認証をバイパスして後続ルーターへ移譲
+    if (req.path.startsWith('/host')) return next();
+    return requireAuthIfConfigured(req, res, next);
+}, require('./routes/corePlugins.cjs'));
 
 // MCP Tool Execution Route
 const { callMcpTool } = require('./mcpClient.cjs');
@@ -2227,36 +2231,60 @@ app.post('/api/auth/token-exchange', express.json(), express.urlencoded({ extend
                 return res.status(403).json({ error: 'access_denied', error_description: 'Session context mismatch' });
             }
 
-            // Get user permissions and allowed widgets
+            // Get user permissions and allowed widgets via ZTA PDP
             let rbacPolicies;
             try {
-                rbacPolicies = JSON.parse(await db.getSetting('RBAC_POLICIES') || '{}');
+                const rawPdp = JSON.parse(await db.getSetting('RBAC_POLICIES') || '{}');
+                rbacPolicies = ztaPdpService.hydrateAllPolicies(rawPdp);
             } catch(e) {
-                rbacPolicies = {};
+                rbacPolicies = ztaPdpService.hydrateAllPolicies({});
             }
             
             const roles = (row.role || 'user').split(',').map(r => r.trim());
             const allowed_widgets_set = new Set();
+            const allowed_actions_set = new Set();
+            let maxLevelRank = 0;
+            let resolvedWidgetLevel = 'none';
+            const cleanWidgetId = String(audience).replace(/^app:/, '');
+
             roles.forEach(roleName => {
                 const policy = rbacPolicies[roleName] || {};
-                const widgets = policy.allowed_widgets || [];
-                widgets.forEach(w => allowed_widgets_set.add(w));
+                (policy.allowed_widgets || []).forEach(w => allowed_widgets_set.add(w));
+                (policy.allowed_actions || []).forEach(a => allowed_actions_set.add(a));
+                const lvl = policy.widget_levels?.[cleanWidgetId] || (roleName === 'admin' ? 'manage' : 'none');
+                const rnk = ztaPdpService.LEVEL_RANK?.[lvl] || 0;
+                if (rnk > maxLevelRank) {
+                    maxLevelRank = rnk;
+                    resolvedWidgetLevel = lvl;
+                }
             });
 
+            if (audience.startsWith('app:')) {
+                const isInstalled = await pluginManager.isWidgetInstalled(cleanWidgetId);
+                if (!isInstalled) {
+                    return res.status(403).json({ error: 'plugin_not_installed', error_description: `Plugin ${cleanWidgetId} is not installed.` });
+                }
+            }
+
             const allowedWidgets = Array.from(allowed_widgets_set);
-            const hasAccess = allowedWidgets.includes('*') || allowedWidgets.includes(audience);
+            const hasAccess = allowedWidgets.includes('*') || allowedWidgets.includes(audience) || allowedWidgets.includes(`app:${cleanWidgetId}`);
             
-            if (!hasAccess) {
+            if (!hasAccess || resolvedWidgetLevel === 'none') {
                 return res.status(403).json({ error: 'access_denied', error_description: `User does not have access to audience: ${audience}` });
             }
 
-            // Issue a short-lived, downscoped Agent Token
+            // Issue a short-lived, downscoped Agent Token with ZTA PDP claims
             const agentToken = jwt.sign(
                 { 
                     sub: decoded.googleId || decoded.id,
+                    userId: decoded.id,
                     email: decoded.email,
                     name: decoded.name,
-                    aud: audience,
+                    aud: audience.startsWith('app:') ? audience : `app:${cleanWidgetId}`,
+                    widgetId: cleanWidgetId,
+                    widget_level: resolvedWidgetLevel,
+                    allowed_actions: Array.from(allowed_actions_set),
+                    native_language: row.native_language || 'ja',
                     role: row.role,
                     type: 'agent_token'
                 },
@@ -2933,313 +2961,8 @@ app.put('/api/users/:id/language', requireAuth, (req, res) => {
     });
 });
 
-app.get('/api/virtual-office/users', requireAuth, (req, res) => {
-    const loginUserId = req.user.id;
-
-    // NOTE: 3秒ごとのバックグラウンドポーリングで last_active_at を無条件更新すると、
-    // 無操作放置中でも永続的に Online が維持されてしまうため、ここでは更新しない。
-    // last_active_at は実操作ハートビート (/api/auth/me?active=1) および明示的なステータス更新時のみ更新する。
-
-    const sql = `
-        SELECT u.id, u.email, u.name, u.avatar_url, u.role, u.current_room, u.status_text, u.is_remote, u.last_active_at,
-               u.assistant_work_start, u.assistant_work_end, u.assistant_break_start, u.assistant_break_end, u.assistant_meeting_buffer, u.assistant_prompt, u.native_language,
-               (SELECT COUNT(*) FROM dm_messages m WHERE m.sender_id = u.id AND m.receiver_id = ? AND m.is_read = 0) as unread_count
-        FROM users u
-    `;
-    db.all(sql, [loginUserId], async (err, rows) => {
-        if (err) return res.status(500).json({ error: 'Database error' });
-        const maxLockCount = await getSessionLockMaxCount();
-        const hardLogoutThresholdMs = maxLockCount * SESSION_IDLE_TIMEOUT_MS;
-        
-        const enriched = rows.map(user => {
-            const isOffline = isUserOffline(user, null);
-            if (isOffline && (user.status_text || '').toLowerCase() !== 'offline') {
-                const hadLastActive = !!user.last_active_at;
-                const prevLastActive = user.last_active_at;
-                const lastActiveMs = user.last_active_at ? new Date(user.last_active_at).getTime() : NaN;
-                const idleMs = Number.isNaN(lastActiveMs) ? Infinity : (Date.now() - lastActiveMs);
-                if (idleMs >= hardLogoutThresholdMs) {
-                    db.run("UPDATE users SET status_text = 'Offline', last_active_at = NULL WHERE id = ?", [user.id], () => {});
-                } else {
-                    // ソフトロック期間中は status_text のみ Offline に更新し、last_active_at はサイクル計測のため保持する
-                    db.run("UPDATE users SET status_text = 'Offline' WHERE id = ?", [user.id], () => {});
-                }
-                if (hadLastActive) {
-                    auditDb.logEvent({
-                        userId: user.id,
-                        userEmail: user.email,
-                        eventType: 'session_timeout',
-                        action: 'ZTA Virtual Office Presence Idle Timeout',
-                        status: 'success',
-                        req: req,
-                        details: {
-                            reason: 'virtual_office_idle_timeout_detected',
-                            lastActiveAt: prevLastActive,
-                            idleTimeoutMinutes: SESSION_IDLE_TIMEOUT_MS / 60000
-                        }
-                    });
-                }
-            }
-
-            return {
-                ...user,
-                is_offline: isOffline,
-                is_remote: user.is_remote ?? 0,
-                current_room: user.current_room || 'open-space',
-                status_text: isOffline ? 'Offline' : (user.status_text || 'Active'),
-                unread_count: user.unread_count || 0,
-                native_language: user.native_language || 'ja',
-                assistant_work_start: user.assistant_work_start || '09:00',
-                assistant_work_end: user.assistant_work_end || '17:30',
-                assistant_break_start: user.assistant_break_start || '12:00',
-                assistant_break_end: user.assistant_break_end || '13:00',
-                assistant_meeting_buffer: user.assistant_meeting_buffer !== undefined ? user.assistant_meeting_buffer : 30,
-                assistant_prompt: user.assistant_prompt || ''
-            };
-        });
-        res.json(enriched);
-    });
-});
-
-app.post('/api/virtual-office/settings', requireAuth, async (req, res) => {
-    const { assistant_work_start, assistant_work_end, assistant_break_start, assistant_break_end, assistant_meeting_buffer, assistant_prompt, override } = req.body;
-    const userId = req.user.id;
-
-    // ZTA Security Boundary Check: Block external domain users
-    if (await isExternalUser(req.user)) {
-        return res.status(403).json({ error: 'Permission denied. External domain users cannot change AI assistant settings.' });
-    }
-
-    // 1. ロール・アクション権限のチェック
-    const allowedActions = req.user.allowed_actions || [];
-    const hasPermission = allowedActions.includes('*') || allowedActions.includes('action:manage_assistant_rules');
-    if (!hasPermission) {
-        return res.status(403).json({ error: 'Permission denied. Requires action:manage_assistant_rules' });
-    }
-
-    // 2. 変更前プロンプトの取得
-    db.get("SELECT assistant_prompt FROM users WHERE id = ?", [userId], async (err, row) => {
-        if (err) {
-            console.error("Failed to fetch previous assistant settings:", err);
-            return res.status(500).json({ error: 'Database error' });
-        }
-        
-        const previousPrompt = row ? row.assistant_prompt : '';
-        const newPrompt = assistant_prompt !== undefined ? assistant_prompt : previousPrompt;
-
-        let isCompliant = true;
-        let warningReason = '';
-
-        // 3. プロンプト変更時のみ就業規則審査（変更がない場合はスキップして誤検知を防ぐ）
-        const isPromptChanged = assistant_prompt !== undefined && assistant_prompt !== previousPrompt;
-        if (isPromptChanged) {
-            const companyWorkPolicy = await db.getSetting('COMPANY_WORK_POLICY') || '';
-            const apiKey = await db.getSetting('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
-            const claudeApiKey = await db.getSetting('CLAUDE_API_KEY') || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
-            const aiProvider = (await db.getSetting('AI_PROVIDER')) || (claudeApiKey && !apiKey ? 'claude' : 'gemini');
-
-            if ((apiKey || claudeApiKey) && companyWorkPolicy) {
-                try {
-                    const systemInstruction = `あなたは会社のコンプライアンスおよび労働管理（36協定）の監査用AIです。
-提供された「就業規則」と、ユーザーが設定しようとしている「AIアシスタント用プロンプト」を比較し、AIアシスタントの指示が就業規則に違反している（または違反を助長している）疑いがないかを判定してください。
-
-特に以下の点に注意してください。
-1. 午後22:00から翌午前05:00までの深夜時間帯でのアポイントを自動調整・受託するような記述、または深夜労働を推奨・助長する記述。
-2. 就業時間外（例: 17:30以降など）の打ち合わせを、ユーザーの確認や承認なしに【自動で仮登録】するプロンプト指示、または「いかなる時間でも無制限にアポを入れて構わない」といった過重労働を容認する指示。
-   ※ただし、時間外アポイントに対して自動調整せず、「BOSSに確認する」ボタンを表示してユーザーに確認を求めるプロセスや、時間外アポをBOSS自身が手動承認するプロセスについての指示は、過重労働の容認とはみなさず、許容（COMPLIANT）してください。
-3. 休憩時間（例: 12:00-13:00）におけるアポイントを自動調整・受託するような記述。休憩時間は労働者の健康管理のために必須であり、この時間帯の自動調整は原則禁止（NON-COMPLIANT）と判定してください。
-4. ハラスメントや情報の漏洩など、その他就業規則に反する指示。
-
-出力は、以下のJSON形式で返答してください。JSON以外の余計な記述やマークダウンタグ（\`\`\`json等）を含めないでください。
-{
-  "compliant": trueまたはfalse（違反の疑いがない場合はtrue、違反またはその疑いがある場合はfalse）,
-  "reason": "違反の疑いがある場合の具体的な懸念・違反箇所についての理由説明（日本語）"
-}`;
-
-                    const userContent = `【就業規則】
-${companyWorkPolicy}
-
-【AIアシスタント用プロンプト】
-${newPrompt}`;
-
-                    let rawJsonText = '';
-                    if ((aiProvider === 'claude' || !apiKey) && claudeApiKey) {
-                        const claudeModel = await db.getSetting('CLAUDE_MODEL') || 'claude-sonnet-4-6';
-                        rawJsonText = await llmAdapter.generateTextWithClaude({
-                            apiKey: claudeApiKey,
-                            model: claudeModel,
-                            prompt: userContent,
-                            systemInstruction,
-                            temperature: 0.2,
-                            jsonMode: true
-                        });
-                    } else if (apiKey) {
-                        const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: 300000 } });
-                        const model = await db.getSetting('GEMINI_MODEL') || 'gemini-3.6-flash';
-                        const response = await client.models.generateContent({
-                            model: model,
-                            contents: userContent,
-                            config: {
-                                systemInstruction: systemInstruction,
-                                responseMimeType: "application/json",
-                                responseSchema: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        compliant: { type: "BOOLEAN", description: "Whether the prompt is compliant with the work policy" },
-                                        reason: { type: "STRING", description: "The detailed reason if there is a suspected violation" }
-                                    },
-                                    required: ["compliant", "reason"]
-                                }
-                            }
-                        });
-                        rawJsonText = response.text || '';
-                    }
-
-                    if (rawJsonText) {
-                        try {
-                            const cleanJson = rawJsonText.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
-                            const evaluation = JSON.parse(cleanJson);
-                            isCompliant = evaluation.compliant !== false;
-                            warningReason = evaluation.reason || '';
-                        } catch (parseErr) {
-                            console.error("Failed to parse compliance response JSON:", parseErr, rawJsonText);
-                        }
-                    }
-                } catch (geminiErr) {
-                    console.error("Failed to evaluate prompt compliance via AI:", geminiErr);
-                    // AI APIで何らかのエラーが起きた場合は、システム全体がブロックされないように適合扱いとする
-                }
-            }
-        }
-
-        // 4. 違反が疑われ、かつ強制保存フラグがない場合は一時ブロックして警告を返す
-        if (!isCompliant && override !== true) {
-            // 監査ログにブロック（blocked）として記録
-            await auditDb.logEvent({
-                userId: req.user.id,
-                userEmail: req.user.email,
-                eventType: 'policy_compliance',
-                action: 'update_assistant_settings',
-                status: 'blocked',
-                req: req,
-                details: {
-                    policy_compliance: 'SUSPECTED_VIOLATION',
-                    warning_reason: warningReason,
-                    previous_prompt: previousPrompt,
-                    new_prompt: newPrompt,
-                    override: false
-                }
-            });
-
-            return res.json({ status: 'warning', reason: warningReason });
-        }
-
-        // 5. 保存実行
-        db.run(
-            `UPDATE users SET 
-                assistant_work_start = COALESCE(?, assistant_work_start), 
-                assistant_work_end = COALESCE(?, assistant_work_end), 
-                assistant_break_start = COALESCE(?, assistant_break_start),
-                assistant_break_end = COALESCE(?, assistant_break_end),
-                assistant_meeting_buffer = COALESCE(?, assistant_meeting_buffer),
-                assistant_prompt = COALESCE(?, assistant_prompt)
-             WHERE id = ?`,
-            [assistant_work_start, assistant_work_end, assistant_break_start, assistant_break_end, assistant_meeting_buffer, assistant_prompt, userId],
-            async (updateErr) => {
-                if (updateErr) {
-                    console.error("Failed to update assistant settings:", updateErr);
-                    return res.status(500).json({ error: 'Failed to update assistant settings' });
-                }
-
-                // 6. 成功（または強制保存）を監査ログに記録
-                const complianceStatus = warningReason ? 'SUSPECTED_VIOLATION' : 'COMPLIANT';
-                await auditDb.logEvent({
-                    userId: req.user.id,
-                    userEmail: req.user.email,
-                    eventType: 'policy_compliance',
-                    action: 'update_assistant_settings',
-                    status: override ? 'override' : 'success',
-                    req: req,
-                    details: {
-                        policy_compliance: complianceStatus,
-                        warning_reason: warningReason || null,
-                        previous_prompt: previousPrompt,
-                        new_prompt: newPrompt,
-                        override: !!override
-                    }
-                });
-
-                res.json({ status: 'ok' });
-            }
-        );
-    });
-});
-
-app.post('/api/virtual-office/status', requireAuth, (req, res) => {
-    const { current_room, status_text, is_remote, native_language, targetUserId } = req.body;
-    const userId = targetUserId || req.user.id;
-    const isSelfAction = Number(userId) === Number(req.user.id);
-    
-    db.get("SELECT current_room, status_text, is_remote, native_language, last_active_at FROM users WHERE id = ?", [userId], (err, user) => {
-        if (err) {
-            console.error('Error fetching user status:', err);
-            return res.status(500).json({ error: 'Database error' });
-        }
-        if (!user) return res.status(404).json({ error: 'User not found' });
-        
-        const nextRoom = current_room !== undefined ? current_room : (user.current_room || 'open-space');
-        const nextStatus = status_text !== undefined ? status_text : (user.status_text || 'Active');
-        const nextRemote = is_remote !== undefined ? is_remote : (user.is_remote ?? 0);
-        const nextLang = native_language !== undefined ? native_language : (user.native_language || 'ja');
-        const nextLastActive = nextStatus.toLowerCase() === 'offline'
-            ? null
-            : (isSelfAction ? new Date().toISOString() : user.last_active_at);
-        
-        db.run(
-            "UPDATE users SET current_room = ?, status_text = ?, is_remote = ?, native_language = ?, last_active_at = ? WHERE id = ?",
-            [nextRoom, nextStatus, nextRemote, nextLang, nextLastActive, userId],
-            function(updateErr) {
-                if (updateErr) {
-                    console.error('Error updating user status:', updateErr);
-                    return res.status(500).json({ error: 'Database error' });
-                }
-                res.json({
-                    success: true,
-                    status: {
-                        current_room: nextRoom,
-                        status_text: nextStatus,
-                        is_remote: nextRemote,
-                        native_language: nextLang,
-                        is_offline: nextStatus.toLowerCase() === 'offline' || !nextLastActive
-                    }
-                });
-            }
-        );
-    });
-});
-
-app.post('/api/virtual-office/generate-avatar', requireAuth, (req, res) => {
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId is required' });
-    
-    const avatarSeeds = [
-        'https://api.dicebear.com/7.x/pixel-art/svg?seed=John',
-        'https://api.dicebear.com/7.x/pixel-art/svg?seed=Jane',
-        'https://api.dicebear.com/7.x/pixel-art/svg?seed=Minoru',
-        'https://api.dicebear.com/7.x/pixel-art/svg?seed=Inui',
-        'https://api.dicebear.com/7.x/pixel-art/svg?seed=AI',
-        'https://api.dicebear.com/7.x/pixel-art/svg?seed=Nico',
-        'https://api.dicebear.com/7.x/pixel-art/svg?seed=Leo',
-        'https://api.dicebear.com/7.x/pixel-art/svg?seed=Mimi'
-    ];
-    
-    const randomAvatar = avatarSeeds[Math.floor(Math.random() * avatarSeeds.length)];
-    
-    db.run("UPDATE users SET avatar_url = ? WHERE id = ?", [randomAvatar, userId], function(err) {
-        if (err) return res.status(500).json({ error: 'Database error' });
-        res.json({ success: true, avatar_url: randomAvatar });
-    });
-});
+// NOTE: Virtual Office API has been decoupled into the independent signed plugin @techies/ea-widget-virtual-office (Port 8091).
+// Requests are routed via Express 5 reverse proxy /plugin-proxy/virtual-office/api/vo/*
 
 app.get('/api/invitations', requireAuth, (req, res) => {
     const allowed = req.user.allowed_actions || [];
@@ -6113,386 +5836,8 @@ async function getCommonFreeSlots(req, res, targetEmail, settings = {}) {
     }
 }
 
-// DM API Endpoints
-app.get('/api/dm/messages', requireAuth, (req, res) => {
-    const loginUserId = req.user.id;
-    const targetUserId = parseInt(req.query.targetUserId);
-
-    if (!targetUserId) {
-        return res.status(400).json({ error: 'targetUserId is required' });
-    }
-
-    const sql = `
-        SELECT * FROM dm_messages 
-        WHERE (sender_id = ? AND receiver_id = ?) 
-           OR (sender_id = ? AND receiver_id = ?)
-        ORDER BY created_at ASC
-    `;
-    db.all(sql, [loginUserId, targetUserId, targetUserId, loginUserId], (err, rows) => {
-        if (err) {
-            return res.status(500).json({ error: 'Failed to fetch DM messages' });
-        }
-        
-        // 相手から自分宛ての未読メッセージを既読にする
-        db.run(
-            "UPDATE dm_messages SET is_read = 1 WHERE sender_id = ? AND receiver_id = ? AND is_read = 0",
-            [targetUserId, loginUserId],
-            (updateErr) => {
-                if (updateErr) console.error("Failed to mark messages as read:", updateErr);
-            }
-        );
-
-        res.json({ messages: rows });
-    });
-});
-
-app.get('/api/dm/unread', requireAuth, (req, res) => {
-    const loginUserId = req.user.id;
-    const sql = `
-        SELECT m.id, m.sender_id, m.text, m.created_at, u.name as sender_name,
-               CASE WHEN u.avatar_url LIKE 'data:%' THEN ('/api/users/' || u.id || '/avatar') ELSE u.avatar_url END as sender_avatar
-        FROM dm_messages m
-        JOIN users u ON m.sender_id = u.id
-        WHERE m.receiver_id = ? AND m.is_read = 0 AND m.sender_type = 'user'
-        ORDER BY m.created_at DESC
-    `;
-    db.all(sql, [loginUserId], (err, rows) => {
-        if (err) {
-            return res.status(500).json({ error: 'Failed to fetch unread messages' });
-        }
-        res.json({ unread: rows });
-    });
-});
-
-app.post('/api/dm/messages', requireAuth, async (req, res) => {
-    const loginUserId = req.user.id;
-    const { receiverId, text } = req.body;
-
-    if (!receiverId || !text) {
-        return res.status(400).json({ error: 'receiverId and text are required' });
-    }
-
-    const MAX_ACTIVE_SESSIONS = 2;
-
-    // 受信者の直近10分間のアクティブセッション数（今回送信した loginUserId 以外のユニークな会話相手の数）をカウント
-    const sessionSql = `
-        SELECT COUNT(DISTINCT partner_id) as active_count FROM (
-            SELECT receiver_id as partner_id FROM dm_messages 
-            WHERE sender_id = ? AND created_at >= datetime('now', '-10 minutes') AND sender_type = 'user'
-            UNION
-            SELECT sender_id as partner_id FROM dm_messages 
-            WHERE receiver_id = ? AND created_at >= datetime('now', '-10 minutes') AND sender_type = 'user'
-        )
-        WHERE partner_id != ?
-    `;
-
-    db.get(sessionSql, [receiverId, receiverId, loginUserId], async (sessionErr, sessionRow) => {
-        if (sessionErr) {
-            console.error("Failed to check active sessions:", sessionErr);
-        }
-
-        const activeCount = sessionRow ? sessionRow.active_count : 0;
-        const isSessionLimitExceeded = activeCount >= MAX_ACTIVE_SESSIONS;
-
-        // セッション制限超過の場合は is_read=1 (既読) でメッセージを保存して、受信者側への通知を抑制する。
-        // 超過していない場合は is_read=0 (未読) で保存。
-        const initialIsRead = isSessionLimitExceeded ? 1 : 0;
-
-        db.get("SELECT * FROM users WHERE id = ?", [receiverId], async (err, targetUser) => {
-            if (err || !targetUser) {
-                return res.status(404).json({ error: 'User not found' });
-            }
-
-            const senderLang = req.user.native_language || 'ja';
-            const targetLang = targetUser.native_language || 'ja';
-            const isDifferentLang = senderLang !== targetLang;
-            const targetLangName = targetLang === 'en' ? 'English' : targetLang === 'es' ? 'Spanish' : 'Japanese';
-            const senderLangName = senderLang === 'en' ? 'English' : senderLang === 'es' ? 'Spanish' : 'Japanese';
-            const senderLangFlag = senderLang === 'en' ? '🇺🇸' : senderLang === 'es' ? '🇪🇸' : '🇯🇵';
-            const targetLangFlag = targetLang === 'en' ? '🇺🇸' : targetLang === 'es' ? '🇪🇸' : '🇯🇵';
-
-            let textToSave = text;
-            const localAiEnabled = (await db.getSetting('LOCAL_AI_ENABLED')) === 'true';
-
-            // 1. 言語が異なる場合のみ、Gemma 4 (Local AI) による相手言語への自動翻訳を実行
-            if (isDifferentLang && localAiEnabled) {
-                try {
-                    const rawHost = (await db.getSetting('LOCAL_AI_HOST')) || 'http://localhost:11434';
-                    const host = resolveLocalAiHost(rawHost);
-                    const model = (await db.getSetting('LOCAL_AI_MODEL')) || 'gemma4:26b-mlx';
-
-                    const transRes = await fetch(`${host}/api/generate`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            model,
-                            prompt: `You are an expert translator. Translate the following ${senderLangName} message accurately and naturally into ${targetLangName}. Output ONLY the translated text without quotes or explanations:\n\n"${text}"`,
-                            stream: false,
-                            options: { temperature: 0.2 }
-                        })
-                    });
-
-                    if (transRes.ok) {
-                        const tData = await transRes.json();
-                        const translated = (tData.response || '').trim().replace(/^["']|["']$/g, '');
-                        if (translated) {
-                            textToSave = `🌐 [Gemma 4 Translated (${senderLangFlag} ➔ ${targetLangFlag})]\n${translated}\n\n(${senderLangFlag} 原文: ${text})`;
-                        }
-                    } else {
-                        console.error("Gemma 4 translation returned error status:", transRes.status, await transRes.text());
-                    }
-                } catch (tErr) {
-                    console.error("Gemma 4 translation failed:", tErr.message);
-                }
-            }
-
-            // 2. メッセージをDBへ保存
-            db.run(
-                "INSERT INTO dm_messages (sender_id, receiver_id, sender_type, text, is_read) VALUES (?, ?, 'user', ?, ?)",
-                [loginUserId, receiverId, textToSave, initialIsRead],
-                async function(insertErr) {
-                    if (insertErr) {
-                        return res.status(500).json({ error: 'Failed to send message' });
-                    }
-
-                    const insertedId = this.lastID;
-
-                    // セッション制限超過時の処理
-                    if (isSessionLimitExceeded) {
-                        const targetName = targetUser ? targetUser.name : '相手';
-                        const replyText = `ただいま、${targetName} は複数のチャットが立ち上がっているため、対応できません。しばらく経ってから試してください。`;
-                        
-                        setTimeout(() => {
-                            db.run(
-                                "INSERT INTO dm_messages (sender_id, receiver_id, sender_type, text, is_read) VALUES (?, ?, 'assistant', ?, 1)",
-                                [receiverId, loginUserId, replyText],
-                                (replyErr) => {
-                                    if (replyErr) console.error("Failed to insert session limit decline reply:", replyErr);
-                                }
-                            );
-                        }, 1000);
-
-                        return res.json({ status: 'ok', messageId: insertedId });
-                    }
-
-                    // 3. 通常のステータスに応じた自動返信処理
-                    let replyText = '';
-                    let isAssistant = false;
-                    const isTargetOffline = isUserOffline(targetUser, loginUserId);
-
-                    // 3-1. カレンダー空きスケジュールと移動時間の算出
-                    let freeSlotsText = "なし";
-                    let isOvertime = false;
-                    let isBufferMitigated = false;
-                    let travelDetailsText = "";
-
-                    try {
-                        const settings = {
-                            workStart: targetUser.assistant_work_start,
-                            workEnd: targetUser.assistant_work_end,
-                            meetingBuffer: targetUser.assistant_meeting_buffer
-                        };
-                        const result = await getCommonFreeSlots(req, null, targetUser.email, settings);
-                        const freeSlots = result.slots;
-                        isOvertime = result.isOvertime;
-                        isBufferMitigated = result.isBufferMitigated;
-                        
-                        if (freeSlots && freeSlots.length > 0) {
-                            freeSlotsText = freeSlots.slice(0, 3).map(slot => {
-                                const options = { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false };
-                                const startStr = slot.start.toLocaleTimeString('ja-JP', options);
-                                const endStr = slot.end.toLocaleTimeString('ja-JP', options);
-                                return `・ ${startStr} 〜 ${endStr}`;
-                            }).join('\n');
-                            
-                            if (result.travelDetails && result.travelDetails.length > 0) {
-                                travelDetailsText = result.travelDetails.map(t => {
-                                    return `・ ${t.summary} (${t.type}): ${t.minutes}分を追加 (${t.reason})`;
-                                }).join('\n');
-                            }
-                        }
-                    } catch (slotErr) {
-                        console.error("Failed to fetch slots for AI Assistant context:", slotErr);
-                    }
-
-                    // 3-2. Local AI (Gemma 4) による自動応答（相手の言語で生成）
-                    if (localAiEnabled) {
-                        try {
-                            const rawHost = (await db.getSetting('LOCAL_AI_HOST')) || 'http://localhost:11434';
-                            const host = resolveLocalAiHost(rawHost);
-                            const model = (await db.getSetting('LOCAL_AI_MODEL')) || 'gemma4:26b-mlx';
-
-                            const defaultPrompt = await db.getSetting('DEFAULT_ASSISTANT_PROMPT') || '';
-                            const basePrompt = targetUser.assistant_prompt || defaultPrompt;
-
-                            const systemInstruction = `You are an executive AI Assistant for ${targetUser.name} (${targetUser.role || 'Boss'}).
-- Current Room: ${targetUser.current_room || 'open-space'}
-- Online Presence Status: ${isTargetOffline ? 'Offline (Currently logged out / session timed out)' : (targetUser.status_text || 'Active')}
-- Working Hours: ${targetUser.assistant_work_start || '09:00'} - ${targetUser.assistant_work_end || '17:30'}
-- Today's Available Common Free Slots:
-${freeSlotsText}
-- Sender (${req.user.name})'s Native Language: ${senderLangName}
-- Target (${targetUser.name})'s Native Language: ${targetLangName}
-
-Instructions:
-1. If the sender is asking for a meeting or chat, suggest the available free slots clearly.
-2. ${isDifferentLang ? `Generate a bilingual response. First, write the response in ${targetLangName} (${targetUser.name}'s language). Then, provide the translation in ${senderLangName} (the sender's language) so both parties can read it.` : `Respond politely and naturally in ${senderLangName}.`}
-3. If ${targetUser.name} is Offline, in 'focus-zone', or in 'meeting-room', state that they are currently unavailable and take a message.
-4. Output only the final assistant chat response without any meta commentary.`;
-
-                            const ollamaRes = await fetch(`${host}/api/generate`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    model,
-                                    prompt: `Team Member (${req.user.name}) says: "${text}"`,
-                                    system: systemInstruction,
-                                    stream: false,
-                                    options: { temperature: 0.3 }
-                                })
-                            });
-
-                            if (ollamaRes.ok) {
-                                const data = await ollamaRes.json();
-                                const rawReply = (data.response || '').trim();
-                                if (rawReply) {
-                                    replyText = isDifferentLang ? `🤖 [AI Assistant (Gemma 4 🦙)]\n${rawReply}` : rawReply;
-                                    isAssistant = true;
-                                }
-                            }
-                        } catch (gemmaErr) {
-                            console.error("Local Gemma 4 assistant reply error:", gemmaErr.message);
-                        }
-                    }
-
-                    // 3. Gemini / Claude による動的応答生成の試行 (Local AI 未使用または失敗時)
-                    if (!replyText) {
-                        const apiKey = await db.getSetting('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
-                        const claudeApiKey = await db.getSetting('CLAUDE_API_KEY') || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
-                        const aiProvider = (await db.getSetting('AI_PROVIDER')) || (claudeApiKey && !apiKey ? 'claude' : 'gemini');
-
-                        if (apiKey || claudeApiKey) {
-                            try {
-                                const defaultPrompt = await db.getSetting('DEFAULT_ASSISTANT_PROMPT') || '';
-                                const basePrompt = targetUser.assistant_prompt || defaultPrompt;
-
-                                let finalSystemInstruction = basePrompt
-                                    .replace(/{name}/g, targetUser.name)
-                                    .replace(/{room}/g, isTargetOffline ? 'offline' : (targetUser.current_room || 'open-space'))
-                                    .replace(/{work_start}/g, targetUser.assistant_work_start || '09:00')
-                                    .replace(/{work_end}/g, targetUser.assistant_work_end || '17:30')
-                                    .replace(/{free_slots}/g, freeSlotsText !== 'なし' ? freeSlotsText : 'なし');
-
-                                const contextText = `
-【現在のリアルタイム・コンテキスト】
-- 主人の名前: ${targetUser.name}
-- 主人の現在の部屋状態: ${targetUser.current_room || 'open-space'}
-- 主人の現在のオンライン状態: ${isTargetOffline ? 'Offline (オフライン・ログアウト中)' : (targetUser.status_text || 'Active')}
-- 本日の双方の共通空き時間帯: 
-${freeSlotsText}
-- 送信者 (${req.user.name}) の母国語: ${senderLangName}
-- 主人 (${targetUser.name}) の母国語: ${targetLangName}
-`;
-                                const langInstruction = isDifferentLang 
-                                    ? `【注意事項】必ずバイリンガルで回答してください。まず主人が読めるように ${targetLangName} で書き、その後に送信者が読めるように ${senderLangName} で翻訳を添えてください。` 
-                                    : `【注意事項】自然な ${senderLangName} で丁寧に回答してください。`;
-                                
-                                finalSystemInstruction += `\n\n${contextText}\n\n${langInstruction}`;
-
-                                if ((aiProvider === 'claude' || !apiKey) && claudeApiKey) {
-                                    const claudeModel = await db.getSetting('CLAUDE_MODEL') || 'claude-sonnet-4-6';
-                                    replyText = (await llmAdapter.generateTextWithClaude({
-                                        apiKey: claudeApiKey,
-                                        model: claudeModel,
-                                        prompt: `ユーザーからのメッセージ: "${text}"`,
-                                        systemInstruction: finalSystemInstruction,
-                                        temperature: 0.5
-                                    })).trim();
-                                } else if (apiKey) {
-                                    const { GoogleGenAI } = require("@google/genai");
-                                    const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: 300000 } });
-                                    const modelName = await db.getSetting('GEMINI_MODEL') || 'gemini-2.5-flash';
-
-                                    const aiResponse = await client.models.generateContent({
-                                        model: modelName,
-                                        contents: `ユーザーからのメッセージ: "${text}"`,
-                                        config: {
-                                            systemInstruction: finalSystemInstruction,
-                                            temperature: 0.5
-                                        }
-                                    });
-                                    replyText = (aiResponse.text || '').trim();
-                                }
-                                if (replyText) isAssistant = true;
-                            } catch (aiErr) {
-                                console.error("Failed to generate assistant reply using AI:", aiErr);
-                            }
-                        }
-                    }
-
-                    // 4. APIエラーまたはAPIキー未設定時のフォールバック（従来のハードコード分岐）
-                    if (!replyText) {
-                        const userText = (text || '');
-                        const isMeetingRequest = userText.includes('打ち合わせ') || 
-                                                 userText.includes('会議') || 
-                                                 userText.includes('ミーティング') || 
-                                                 userText.includes('話');
-
-                        if (isTargetOffline) {
-                            isAssistant = true;
-                            if (isMeetingRequest && freeSlotsText !== 'なし') {
-                                replyText = `現在 ${targetUser.name} はオフライン（退席中）のため、代わりにアシスタントの私が日程を調整します。本日共通で空いている時間は以下になります。仮登録されますか？\n${freeSlotsText}\n➔ [💻 ミーティングを仮調整する]`;
-                            } else {
-                                replyText = `現在 ${targetUser.name} はオフラインのため、代わりにアシスタントの私がご用件を承ります。次回ログイン時に伝言をお届けしますね！🙇‍♂️`;
-                            }
-                        } else if (targetUser.current_room === 'focus-zone') {
-                            replyText = `すみません、現在 ${targetUser.name} は「集中ゾーン」で別作業に没頭しているため、応答できません。代わりにアシスタントの私が後ほど伝言を伝えておきますね！🙇‍♂️`;
-                            isAssistant = true;
-                        } else if (targetUser.current_room === 'remote') {
-                            if (isMeetingRequest) {
-                                isAssistant = true;
-                                if (freeSlotsText !== 'なし') {
-                                    if (isOvertime) {
-                                        const workStartFormatted = targetUser.assistant_work_start || '09:00';
-                                        const workEndFormatted = targetUser.assistant_work_end || '17:30';
-                                        const bufferMin = targetUser.assistant_meeting_buffer !== undefined ? targetUser.assistant_meeting_buffer : 30;
-                                        replyText = `${targetUser.name} の就業時間は ${workStartFormatted}〜${workEndFormatted} まで（最終受付は終了 ${bufferMin}分前）となっておりますが、本日就業時間内に共通の空き時間がございません。もしお急ぎでしたら時間外になりますが以下の時間帯で調整可能か、本人（BOSS）に確認いたしますがいかがでしょうか？\n${freeSlotsText}\n➔ [💻 時間外でBOSSに確認する]`;
-                                    } else if (isBufferMitigated) {
-                                        replyText = `${targetUser.name} はリモートワーク中のため、代わりにアシスタントの私が日程を調整します。就業終了間際（設定されたバッファ時間内）になりますが、本日就業時間内に共通で空いている時間は以下になります。仮登録されますか？\n${freeSlotsText}\n➔ [💻 ミーティングを仮調整する]`;
-                                    } else {
-                                        replyText = `${targetUser.name} はリモートワーク中のため、代わりにアシスタントの私が日程を調整します。お二人のカレンダーを確認したところ、本日共通で空いている時間は以下になります。仮登録されますか？\n${freeSlotsText}\n➔ [💻 ミーティングを仮調整する]`;
-                                    }
-                                } else {
-                                    replyText = `${targetUser.name} はリモートワーク中のため、代わりにアシスタントの私が日程を調整します。本日中はお互いのカレンダーに共通して空いている時間帯（30分以上）が見当たりませんでした。個別調整が必要ですので、後ほど伝えておきます！`;
-                                }
-                            } else {
-                                replyText = `${targetUser.name} は現在リモート勤務中ですが、アシスタントの私から本人にチャットが届いている旨をプッシュ通知で伝えておきますね！ご用件をこのままお書きください。`;
-                                isAssistant = true;
-                            }
-                        } else if (targetUser.current_room && targetUser.current_room.startsWith('meeting-room')) {
-                            replyText = `現在 ${targetUser.name} は「会議室」で打ち合わせ中のため、代理でアシスタントが受け付けております。会議が終わり次第、本人が対応いたします。`;
-                            isAssistant = true;
-                        }
-                    }
-
-                    if (replyText) {
-                        setTimeout(() => {
-                            db.run(
-                                "INSERT INTO dm_messages (sender_id, receiver_id, sender_type, text, is_read) VALUES (?, ?, ?, ?, 1)",
-                                [receiverId, loginUserId, isAssistant ? 'assistant' : 'user', replyText],
-                                (err) => {
-                                    if (err) console.error("Failed to insert auto reply:", err);
-                                }
-                            );
-                        }, 1000);
-                    }
-
-                    res.json({ status: 'ok', messageId: insertedId });
-                });
-            }
-        );
-    });
-});
+// NOTE: DM Chat API has been decoupled into the independent signed plugin @techies/ea-widget-virtual-office (Port 8091).
+// Requests are routed via Express 5 reverse proxy /plugin-proxy/virtual-office/api/vo/dm/*
 
 // ==========================================
 // USER PREFERENCES API
@@ -6552,6 +5897,99 @@ app.delete('/api/memos/:id', requireAuth, (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ success: true });
     });
+});
+
+// ==========================================
+// EA-Core Platform Host API & ZTA Plugin Proxy
+// ==========================================
+const { createCoreHostRouter } = require('./routes/coreHostApi.cjs');
+app.use('/api/core/host', createCoreHostRouter({
+    getCommonFreeSlots,
+    getCalendarClient,
+    resolveLocalAiHost,
+    isUserOffline,
+    isExternalUser
+}));
+
+app.use('/plugin-proxy/:widgetId', requireAuth, async (req, res) => {
+    const { widgetId } = req.params;
+    try {
+        const allowedWidgets = req.user?.allowed_widgets || [];
+        const effLevel = await ztaPdpService.evaluateUserWidgetLevel(req.user, widgetId);
+        const hasPerm = (allowedWidgets.includes('*') || allowedWidgets.includes(`app:${widgetId}`)) && effLevel !== 'none';
+        if (!hasPerm) {
+            return res.status(403).json({ error: `ZTA Policy Denied: Access to plugin '${widgetId}' is not permitted.` });
+        }
+
+        const pluginInfo = await pluginManager.getInstalledPluginRuntimeInfo(widgetId);
+        if (!pluginInfo || !pluginInfo.serviceUrl) {
+            return res.status(404).json({ error: `External plugin '${widgetId}' is not installed or serviceUrl is unconfigured.` });
+        }
+
+        const subPath = req.url || '/';
+        const upstreamUrl = `${pluginInfo.serviceUrl.replace(/\/$/, '')}${subPath}`;
+
+        let authHeader = req.headers.authorization;
+        if (!authHeader) {
+            const ephemeralToken = jwt.sign(
+                {
+                    sub: req.user.googleId || req.user.id,
+                    userId: req.user.id,
+                    email: req.user.email,
+                    name: req.user.name,
+                    aud: `app:${widgetId}`,
+                    widgetId,
+                    widget_level: effLevel,
+                    allowed_actions: req.user.allowed_actions || [],
+                    native_language: req.user.native_language || 'ja',
+                    role: req.user.role,
+                    type: 'agent_token'
+                },
+                process.env.JWT_SECRET || 'secret',
+                { expiresIn: '2m' }
+            );
+            authHeader = `Bearer ${ephemeralToken}`;
+        }
+
+        const forwardHeaders = {
+            authorization: authHeader,
+            'x-ea-host-url': process.env.EA_CORE_INTERNAL_URL || `http://localhost:${port}`,
+            'x-ea-proxy-base': `/plugin-proxy/${widgetId}`
+        };
+        if (req.headers['content-type']) {
+            forwardHeaders['content-type'] = req.headers['content-type'];
+        }
+        if (req.headers.accept) {
+            forwardHeaders.accept = req.headers.accept;
+        }
+
+        const fetchOptions = {
+            method: req.method,
+            headers: forwardHeaders
+        };
+        if (!['GET', 'HEAD'].includes(req.method) && req.body !== undefined) {
+            fetchOptions.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+        }
+
+        const upstreamRes = await fetch(upstreamUrl, fetchOptions);
+        const contentType = upstreamRes.headers.get('content-type');
+        if (contentType) {
+            res.setHeader('Content-Type', contentType);
+        }
+        // Modern Web Guidance (security §1.4): Restrict iframe embedding strictly to same-origin EA-Core
+        res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+        res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+
+        const buf = Buffer.from(await upstreamRes.arrayBuffer());
+        res.status(upstreamRes.status).send(buf);
+    } catch (proxyErr) {
+        console.error(`[PluginProxy:${widgetId}] Upstream error:`, proxyErr.message);
+        res.status(502).json({
+            error: `独立ウィジェットサーバー (${widgetId}) へ接続できません。コンテナまたはプロセスが起動しているか確認してください。`,
+            details: proxyErr.message
+        });
+    }
 });
 
 // ==========================================

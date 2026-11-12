@@ -34,7 +34,12 @@ server/*.env
 certbot/
 scratch/
 
+# Plugins
+server/plugins/*
+!server/plugins/.gitkeep
+
 bin/terraform
+
 **/.terraform/
 **/.terraform*
 **/*.tfstate

@@ -31,49 +31,60 @@ const Desktop = ({ user, onLogout, config }) => {
   const [notifications, setNotifications] = useState([]);
   const notifiedIdsRef = useRef(new Set());
 
-  // 3秒ポーリングによる未読メッセージ監視
+  // プラグインによる未読メッセージ等の動的バックグラウンド監視
   useEffect(() => {
     let intervalId;
 
-    const checkUnread = async () => {
+    const checkPluginUnread = async () => {
       try {
-        const res = await fetch('/api/dm/unread');
-        if (res.ok) {
-          const data = await res.json();
-          const newUnreads = data.unread || [];
+        const installed = config?.installedWidgets || [];
+        // entrypoints.backgroundUnreadApi を持つ外部プラグインを検出
+        const unreadPlugins = installed.filter(w => typeof w === 'object' && w.entrypoints?.backgroundUnreadApi);
+        
+        // 外部プラグインからの未読取得
+        for (const plugin of unreadPlugins) {
+          const endpoint = `/plugin-proxy/${plugin.id}${plugin.entrypoints.backgroundUnreadApi}`;
+          const res = await fetch(endpoint);
+          if (res.ok) {
+            const data = await res.json();
+            const newUnreads = data.unread || [];
 
-          let addedAny = false;
-          const currentNewNotifications = [];
+            let addedAny = false;
+            const currentNewNotifications = [];
 
-          newUnreads.forEach(msg => {
-            if (!notifiedIdsRef.current.has(msg.id)) {
-              notifiedIdsRef.current.add(msg.id);
-              currentNewNotifications.push({
-                id: msg.id,
-                senderId: msg.sender_id,
-                senderName: msg.sender_name,
-                senderAvatar: msg.sender_avatar,
-                text: msg.text,
-                createdAt: msg.created_at
-              });
-              addedAny = true;
+            newUnreads.forEach(msg => {
+              const notificationKey = `${plugin.id}-${msg.id}`;
+              if (!notifiedIdsRef.current.has(notificationKey)) {
+                notifiedIdsRef.current.add(notificationKey);
+                currentNewNotifications.push({
+                  id: notificationKey,
+                  pluginId: plugin.id,
+                  subView: 'dm-chat',
+                  senderId: msg.sender_id,
+                  senderName: msg.sender_name,
+                  senderAvatar: msg.sender_avatar,
+                  text: msg.text,
+                  createdAt: msg.created_at
+                });
+                addedAny = true;
+              }
+            });
+
+            if (addedAny) {
+              setNotifications(prev => [...prev, ...currentNewNotifications]);
             }
-          });
-
-          if (addedAny) {
-            setNotifications(prev => [...prev, ...currentNewNotifications]);
           }
         }
       } catch (err) {
-        console.error("Failed to fetch unread notifications:", err);
+        // バックグラウンドポーリングのエラーは静かに握りつぶす
       }
     };
 
-    checkUnread();
-    intervalId = setInterval(checkUnread, 3000);
+    checkPluginUnread();
+    intervalId = setInterval(checkPluginUnread, 4000);
 
     return () => clearInterval(intervalId);
-  }, []);
+  }, [config?.installedWidgets]);
 
   // 5秒後の自動フェードアウト
   useEffect(() => {
@@ -184,7 +195,13 @@ const Desktop = ({ user, onLogout, config }) => {
       let width = 600;
       let height = 400;
 
-      if (type === 'gemini') {
+      if (props?.customWidth && props?.customHeight) {
+        width = props.customWidth;
+        height = props.customHeight;
+      } else if (type && type.startsWith('plugin-subview:')) {
+        width = props?.width || 380;
+        height = props?.height || 520;
+      } else if (type === 'gemini') {
         width = 400;
         height = 650;
       } else if (type === 'deep-research') {
@@ -205,12 +222,10 @@ const Desktop = ({ user, onLogout, config }) => {
       } else if (type === 'knowledge-base') {
         width = 900;
         height = 650;
-      } else if (type === 'virtual-office') {
-        width = 750;
-        height = 550;
-      } else if (type === 'dm-chat') {
-        width = 380;
-        height = 500;
+      } else {
+        // プラグインまたはその他アプリのデフォルト
+        width = 800;
+        height = 580;
       }
 
       const newWin = clampWindowToViewport({
@@ -230,11 +245,28 @@ const Desktop = ({ user, onLogout, config }) => {
     });
   }, []);
 
-  const handleNotificationClick = (senderId, senderName, senderAvatar) => {
-    openWindow(`dm-chat-${senderId}`, 'dm-chat', `Chat with ${senderName}`, {
-      targetUser: { id: senderId, name: senderName, avatar_url: senderAvatar }
+  const handleNotificationClick = (notificationOrSenderId, senderName, senderAvatar, pluginId = 'virtual-office', subView = 'dm-chat') => {
+    let sId = notificationOrSenderId;
+    let sName = senderName;
+    let sAvatar = senderAvatar;
+    let pId = pluginId;
+    let sView = subView;
+
+    if (typeof notificationOrSenderId === 'object' && notificationOrSenderId !== null) {
+      sId = notificationOrSenderId.senderId;
+      sName = notificationOrSenderId.senderName;
+      sAvatar = notificationOrSenderId.senderAvatar;
+      pId = notificationOrSenderId.pluginId || 'virtual-office';
+      sView = notificationOrSenderId.subView || 'dm-chat';
+    }
+
+    const subViewType = `plugin-subview:${pId}:${sView}`;
+    openWindow(`plugin-subview-${pId}-${sView}-${sId}`, subViewType, `Chat with ${sName}`, {
+      customWidth: 380,
+      customHeight: 520,
+      targetUser: { id: sId, name: sName, avatar_url: sAvatar }
     });
-    setNotifications(prev => prev.filter(n => n.senderId !== senderId));
+    setNotifications(prev => prev.filter(n => n.senderId !== sId));
   };
 
   const closeWindow = React.useCallback((id) => {
@@ -400,12 +432,13 @@ const Desktop = ({ user, onLogout, config }) => {
             'deep-research': 'Deep Research',
             'mcp-chat': 'MCP Chat Client',
             'live-concierge': 'Live Concierge',
-            'virtual-office': 'Virtual Office',
             settings: 'System Settings',
             browser: 'Safari',
             'html-editor': 'HTML Editor'
           };
-          openWindow(id, id, titleMap[id]);
+          const installedPlugin = (config?.installedWidgets || []).find(w => (typeof w === 'string' ? w : w.id) === id);
+          const pluginTitle = installedPlugin ? (typeof installedPlugin === 'object' ? installedPlugin.name : installedPlugin) : null;
+          openWindow(id, id, titleMap[id] || pluginTitle || id);
         }} />
     </div>
   );
