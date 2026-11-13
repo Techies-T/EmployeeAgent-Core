@@ -3,6 +3,28 @@
 本プロジェクトのすべての主要な変更履歴は本ファイルに記録されます。
 フォーマットは [Keep a Changelog](https://keepachangelog.com/ja/1.0.0/) に準拠し、バージョン番号は [セマンティック バージョニング](https://semver.org/lang/ja/) に従います。
 
+## [EA-Core v1.0.2] - 2026-11-13
+
+### 🧩 PQC 署名付き外部ウィジェット分離・Dock アイコン復元・MCP 監査ログ検知強化
+
+#### 📦 耐量子暗号（PQC）署名検証・ウィジェットインストーラー改善 (`scripts/install-widget.cjs`, `server/services/pluginSignatureVerifier.cjs`, `server/index.cjs`)
+- **PQC Gatekeeper & インストーラー互換性向上**:
+  - `manifest.json` および `widget.manifest.json` の自動探索・`bundleDir` 検出ロジックを強化し、署名検証ハッシュ計算時にメタデータファイルを適切に除外するよう修正。
+  - `development.env` の自動読み込みと、ライセンスキー付きの DB カタログ自動登録に対応。
+  - ローカルプラグインの静的配信ルーティングと、Docker Compose プロファイル分離（`plugin-service`）をサポート。
+
+#### 🎨 Virtual Office プラグイン連携・UI 改善 (`src/components/Dock.jsx`, `server/index.cjs`, `docker-compose.full.yml`)
+- **Dock アイコン復元とプロキシルーティング修正**:
+  - Virtual Office ウィジェットの Dock アイコンをマテリアルデザイン統一のベクター SVG アイコンに復元。
+  - プラグインプロキシを `serviceUrl` 優先ルーティングに修正し、Docker 内部 DNS（`ea-widget-virtual-office` ⇄ `macosui`）でのコンテナ間通信を最適化。
+
+#### 🛡️ MCP 接続・ツール取得異常の監査ログ即時記録 (`server/mcpClient.cjs`)
+- **MCP ゼロツール返却・接続エラーの監査ログ出力**:
+  - MCP サーバー（ZTA Gateway 経由含む）への接続失敗・再接続失敗時に `mcp_connection` (`failure`) を `audit_database.sqlite` へ記録。
+  - 接続成功後に `listTools()` が `0 件` を返却した場合（上流サーバー不通時など）やツール一覧取得例外時も `mcp_tools_load` (`failure`) として監査ログへ即時出力するよう改善（5分間の重複抑止スロットリング付き）。
+
+---
+
 ## [EA-Core v1.0.1] - 2026-11-11
 
 ### 🛡️ Passkey (WebAuthn) 永続化・Gemini 4 Argon / Carbon MCP 推論安定化・思考トークン課金可視化
