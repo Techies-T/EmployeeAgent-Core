@@ -92,6 +92,20 @@ async function refreshConnections() {
                     await ensureConnection(serverConnections.get(row.id));
                 } catch (e) {
                     console.error(`[MCP] Failed to connect to MCP Server ${row.name}:`, e.message);
+                    await auditDb.logEvent({
+                        userId: null,
+                        userEmail: 'system',
+                        eventType: 'mcp_connection',
+                        action: `Connect MCP Server Failed: ${row.name}`,
+                        status: 'failure',
+                        details: {
+                            serverId: row.id,
+                            serverName: row.name,
+                            endpointUrl: row.endpoint_url,
+                            connectionMode: inferredMode,
+                            error: e.message || String(e)
+                        }
+                    });
                 }
             }
             resolve();
@@ -250,16 +264,67 @@ async function ensureConnection(connState, user = null, req = null) {
             if (toolsList && toolsList.tools) {
                 connState.tools = toolsList.tools;
                 console.log(`[MCP Router] Server ${connState.name} loaded ${toolsList.tools.length} tools.`);
+                if (toolsList.tools.length === 0) {
+                    console.warn(`[MCP Router] ⚠️ Server ${connState.name} connected, but returned 0 tools. Upstream service may be unreachable.`);
+                    connState.lastZeroToolsAuditAt = Date.now();
+                    await auditDb.logEvent({
+                        userId: user ? user.id : null,
+                        userEmail: user ? user.email : 'system',
+                        eventType: 'mcp_tools_load',
+                        action: `Load MCP Tools (0 tools returned): ${connState.name}`,
+                        status: 'failure',
+                        req: req,
+                        details: {
+                            serverId: connState.id || null,
+                            serverName: connState.name,
+                            endpointUrl: connState.endpoint_url,
+                            toolCount: 0,
+                            reason: 'MCP server connected, but returned 0 tools. Check upstream MCP server connectivity or ZTA Gateway routing.'
+                        }
+                    });
+                }
             }
         } catch (e) {
             console.error(`[MCP ${connState.name}] Failed to list tools:`, e.message);
+            await auditDb.logEvent({
+                userId: user ? user.id : null,
+                userEmail: user ? user.email : 'system',
+                eventType: 'mcp_tools_load',
+                action: `Load MCP Tools Failed: ${connState.name}`,
+                status: 'failure',
+                req: req,
+                details: {
+                    serverId: connState.id || null,
+                    serverName: connState.name,
+                    endpointUrl: connState.endpoint_url,
+                    error: e.message || String(e)
+                }
+            });
         }
     } else if (!connState.tools || connState.tools.length === 0) {
         try {
             const toolsList = await connState.mcpClientInstance.listTools();
             if (toolsList && toolsList.tools && toolsList.tools.length > 0) {
                 connState.tools = toolsList.tools;
+                connState.lastZeroToolsAuditAt = null;
                 console.log(`[MCP Router] Server ${connState.name} successfully reloaded ${toolsList.tools.length} tools.`);
+            } else if (!connState.lastZeroToolsAuditAt || (Date.now() - connState.lastZeroToolsAuditAt > 5 * 60 * 1000)) {
+                connState.lastZeroToolsAuditAt = Date.now();
+                await auditDb.logEvent({
+                    userId: user ? user.id : null,
+                    userEmail: user ? user.email : 'system',
+                    eventType: 'mcp_tools_load',
+                    action: `Reload MCP Tools (0 tools returned): ${connState.name}`,
+                    status: 'failure',
+                    req: req,
+                    details: {
+                        serverId: connState.id || null,
+                        serverName: connState.name,
+                        endpointUrl: connState.endpoint_url,
+                        toolCount: 0,
+                        reason: 'MCP server still returning 0 tools during reload. Check upstream MCP server connectivity or ZTA Gateway routing.'
+                    }
+                });
             }
         } catch (e) {
             console.warn(`[MCP ${connState.name}] Retry listTools failed, resetting stale connection:`, e.message);
@@ -272,6 +337,20 @@ async function ensureConnection(connState, user = null, req = null) {
                 return await ensureConnection(connState, user, req);
             } catch (retryErr) {
                 console.error(`[MCP ${connState.name}] Reconnection attempt failed:`, retryErr.message);
+                await auditDb.logEvent({
+                    userId: user ? user.id : null,
+                    userEmail: user ? user.email : 'system',
+                    eventType: 'mcp_connection',
+                    action: `Reconnect MCP Server Failed: ${connState.name}`,
+                    status: 'failure',
+                    req: req,
+                    details: {
+                        serverId: connState.id || null,
+                        serverName: connState.name,
+                        endpointUrl: connState.endpoint_url,
+                        error: retryErr.message || String(retryErr)
+                    }
+                });
             }
         }
     }
