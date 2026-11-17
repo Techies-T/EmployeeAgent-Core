@@ -409,6 +409,75 @@ ${freeSlotsText || 'なし'}
         }
     });
 
+    // 7.5. GET /api/core/host/calendar/events - Fetch upcoming primary Google Calendar events within 24h
+    router.get('/calendar/events', async (req, res) => {
+        if (!getCalendarClient) {
+            return res.json({ events: [], calendarConnected: false });
+        }
+        try {
+            const hasCookieToken = Boolean(req.cookies && req.cookies.token);
+            const calendarReq = hasCookieToken
+                ? req
+                : {
+                    ...req,
+                    cookies: {
+                        ...(req.cookies || {}),
+                        token: jwt.sign(
+                            {
+                                id: req.user?.id,
+                                email: req.user?.email,
+                                googleId: req.agentAuth?.sub
+                            },
+                            process.env.JWT_SECRET || 'secret',
+                            { expiresIn: '1m' }
+                        )
+                    }
+                };
+
+            // Pass res=null so missing OAuth returns null gracefully instead of sending 401/403
+            const calendar = await getCalendarClient(calendarReq, null, req.user?.email || null);
+            if (!calendar) {
+                return res.json({ events: [], calendarConnected: false });
+            }
+
+            const now = new Date();
+            const timeMin = now.toISOString();
+            const timeMax = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+
+            const response = await calendar.events.list({
+                calendarId: 'primary',
+                timeMin,
+                timeMax,
+                singleEvents: true,
+                orderBy: 'startTime'
+            });
+
+            const events = (response.data?.items || [])
+                .filter((event) => !event.eventType || event.eventType === 'default')
+                .map((event) => ({
+                    id: event.id,
+                    summary: event.summary || '(タイトルなし)',
+                    description: event.description || '',
+                    location: event.location || '',
+                    hangoutLink: event.hangoutLink || '',
+                    htmlLink: event.htmlLink || '',
+                    start: event.start || {},
+                    end: event.end || {},
+                    status: event.status || 'confirmed'
+                }))
+                .sort((a, b) => {
+                    const startA = new Date(a.start?.dateTime || a.start?.date || 0).getTime();
+                    const startB = new Date(b.start?.dateTime || b.start?.date || 0).getTime();
+                    return startA - startB;
+                });
+
+            return res.json({ events, calendarConnected: true });
+        } catch (err) {
+            console.error('[CoreHostApi] Calendar upcoming events error:', err.message);
+            return res.json({ events: [], calendarConnected: false });
+        }
+    });
+
     // 8. POST /api/core/host/calendar/events - Create tentative Google Calendar meeting
     router.post('/calendar/events', async (req, res) => {
         if (req.agentAuth.levelRank < LEVEL_RANK.execute) {
