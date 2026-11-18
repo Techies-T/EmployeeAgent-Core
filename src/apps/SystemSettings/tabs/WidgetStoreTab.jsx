@@ -87,6 +87,8 @@ const WidgetStoreTab = ({
     const [installingCustom, setInstallingCustom] = useState(false);
     const [generatedKeyInfo, setGeneratedKeyInfo] = useState(null);
     const [activeConfigWidget, setActiveConfigWidget] = useState(null);
+    const [updateInfoMap, setUpdateInfoMap] = useState({});
+    const [updatingMap, setUpdatingMap] = useState({});
     const dialogRef = useRef(null);
 
     const fetchPluginsState = async () => {
@@ -249,6 +251,62 @@ const WidgetStoreTab = ({
         }
     };
 
+    const handleCheckWidgetUpdate = async (widgetId) => {
+        setUpdatingMap(prev => ({ ...prev, [widgetId]: 'checking' }));
+        try {
+            const res = await fetch(`/api/core/plugins/${encodeURIComponent(widgetId)}/check-update`);
+            const data = await res.json();
+            if (!res.ok) {
+                alert(data.error || 'アップデート確認に失敗しました。');
+                return;
+            }
+            setUpdateInfoMap(prev => ({ ...prev, [widgetId]: data }));
+            if (!data.updateAvailable) {
+                alert(`最新バージョンです（現在: v${data.currentVersion}）`);
+            }
+        } catch (err) {
+            console.error('Check update failed:', err);
+            alert('アップデート確認に失敗しました。');
+        } finally {
+            setUpdatingMap(prev => ({ ...prev, [widgetId]: null }));
+        }
+    };
+
+    const handleUpdateWidget = async (widgetId) => {
+        setUpdatingMap(prev => ({ ...prev, [widgetId]: 'updating' }));
+        try {
+            const res = await fetch(`/api/core/plugins/${encodeURIComponent(widgetId)}/update`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                alert(data.error || 'アップデートに失敗しました。');
+                return;
+            }
+            if (data.updated) {
+                setInstalled(data.installedWidgets || data.installed || []);
+                setAvailableAddons(data.availableAddons || []);
+                setCapabilities(data.capabilities || []);
+                setUpdateInfoMap(prev => ({ ...prev, [widgetId]: { updateAvailable: false, currentVersion: data.toVersion } }));
+                if (onPluginsChanged) onPluginsChanged(data);
+                window.dispatchEvent(new Event('plugins-updated'));
+                alert(`v${data.fromVersion} → v${data.toVersion} へアップデートしました！`);
+            } else if (data.requiresHostUpdate) {
+                alert(
+                    `${data.message}\n\n最新バージョン: v${data.toVersion}（現在: v${data.fromVersion}）\nEC2 上で以下を実行すると単体更新されます:\n${data.command}`
+                );
+            } else {
+                alert(data.message || 'すでに最新バージョンです。');
+            }
+        } catch (err) {
+            console.error('Update widget failed:', err);
+            alert('アップデート処理に失敗しました。');
+        } finally {
+            setUpdatingMap(prev => ({ ...prev, [widgetId]: null }));
+        }
+    };
+
     const handleResetMinimum = async () => {
         if (!window.confirm('ミニマム初期構成（ノーマルチャット + MCPクライアントのみ）にリセットしますか？\n後いつでもアドオンカタログから再プラグイン可能です。')) {
             return;
@@ -375,8 +433,15 @@ const WidgetStoreTab = ({
                                                 <span className="text-2xl">{WIDGET_ICONS[widget.id] || '🧩'}</span>
                                                 <div>
                                                     <div className="font-bold text-sm text-gray-900">{widget.name}</div>
-                                                    <div className="text-[10px] font-mono text-gray-400">
-                                                        {widget.packageName || widget.packageId} · v{widget.version}
+                                                    <div className="text-[10px] font-mono text-gray-400 flex items-center gap-1.5 flex-wrap">
+                                                        <span>{widget.packageName || widget.packageId} · v{widget.version}</span>
+                                                        <span className={`px-1.5 py-0.2 rounded border text-[9px] ${
+                                                            widget.deploymentType === 'container'
+                                                                ? 'bg-sky-50 text-sky-700 border-sky-200'
+                                                                : 'bg-slate-100 text-slate-600 border-slate-200'
+                                                        }`}>
+                                                            {widget.deploymentType === 'container' ? '🐳 コンテナ型' : '📦 バンドル型'}
+                                                        </span>
                                                     </div>
                                                 </div>
                                             </div>
@@ -408,7 +473,32 @@ const WidgetStoreTab = ({
                                                 </span>
                                             ))}
                                         </div>
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            {(widget.isExternalPlugin || widget.repository) && (
+                                                <>
+                                                    {updateInfoMap[widget.id]?.updateAvailable ? (
+                                                        <button
+                                                            type="button"
+                                                            disabled={Boolean(updatingMap[widget.id])}
+                                                            onClick={() => handleUpdateWidget(widget.id)}
+                                                            className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-2xs cursor-pointer transition disabled:opacity-50"
+                                                        >
+                                                            {updatingMap[widget.id] === 'updating'
+                                                                ? '更新中...'
+                                                                : `⬆️ v${updateInfoMap[widget.id].latestVersion} へ Update`}
+                                                        </button>
+                                                    ) : (
+                                                        <button
+                                                            type="button"
+                                                            disabled={Boolean(updatingMap[widget.id])}
+                                                            onClick={() => handleCheckWidgetUpdate(widget.id)}
+                                                            className="px-2.5 py-1.5 bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 rounded-lg text-xs font-semibold cursor-pointer transition disabled:opacity-50"
+                                                        >
+                                                            {updatingMap[widget.id] === 'checking' ? '確認中...' : '🔄 更新確認'}
+                                                        </button>
+                                                    )}
+                                                </>
+                                            )}
                                             {hasSpecificSettings(widget.id) && (
                                                 <button
                                                     type="button"

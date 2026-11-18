@@ -232,7 +232,9 @@ const WIDGET_CATALOG = [
         packageId: 'com.techies.widget.virtual-office',
         name: 'バーチャルオフィス & DM',
         englishName: 'Virtual Office & Team Presence',
-        version: '3.0.0',
+        version: '3.1.0',
+        deploymentType: 'container',
+        repository: 'Techies-T/ea-widget-virtual-office',
         category: 'workspace_comm',
         iconType: 'virtual-office',
         defaultInstalled: false,
@@ -644,6 +646,9 @@ async function getFullPluginCatalog() {
 
         return {
             ...widget,
+            version: state.verifiedManifest?.version || widget.version,
+            deploymentType: widget.deploymentType || (isExtPlugin ? 'container' : 'bundle'),
+            repository: widget.repository || state.verifiedManifest?.signatures?.githubProvenance?.repository || null,
             isExternalPlugin: isExtPlugin,
             serviceUrl: effectiveServiceUrl,
             manifestUrl: state.manifestUrl || (effectiveServiceUrl ? `${effectiveServiceUrl.replace(/\/$/, '')}/widget.manifest.json` : null),
@@ -999,6 +1004,194 @@ async function getInstalledPluginRuntimeInfo(widgetId) {
     return target;
 }
 
+function compareSemver(a, b) {
+    const parse = (v) => String(v || '0.0.0').replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+    const pa = parse(a);
+    const pb = parse(b);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const na = pa[i] || 0;
+        const nb = pb[i] || 0;
+        if (na > nb) return 1;
+        if (na < nb) return -1;
+    }
+    return 0;
+}
+
+async function checkPluginUpdate(widgetId) {
+    const catalog = await getFullPluginCatalog();
+    const widget = catalog.widgets.find(w => w.id === widgetId);
+    if (!widget) {
+        throw new Error(`Widget '${widgetId}' not found`);
+    }
+
+    const currentVersion = widget.version || '0.0.0';
+    const deploymentType = widget.deploymentType || (widget.isExternalPlugin ? 'container' : 'bundle');
+    const repo = widget.repository || null;
+
+    let liveContainerVersion = null;
+    let liveManifest = null;
+    if (widget.isExternalPlugin && widget.serviceUrl) {
+        try {
+            const liveUrl = `${widget.serviceUrl.replace(/\/$/, '')}/widget.manifest.json`;
+            const liveRes = await fetch(liveUrl, { signal: AbortSignal.timeout(2500) });
+            if (liveRes.ok) {
+                liveManifest = await liveRes.json();
+                liveContainerVersion = liveManifest.version || null;
+            }
+        } catch {
+            // Live container unreachable
+        }
+    }
+
+    let remoteManifest = null;
+    let remoteManifestUrl = null;
+    let releaseUrl = repo ? `https://github.com/${repo}/releases/latest` : null;
+    if (repo) {
+        remoteManifestUrl = `https://github.com/${repo}/releases/latest/download/widget.manifest.json`;
+        try {
+            const ghRes = await fetch(remoteManifestUrl, {
+                headers: { Accept: 'application/json' },
+                signal: AbortSignal.timeout(4000)
+            });
+            if (ghRes.ok) {
+                remoteManifest = await ghRes.json();
+            }
+        } catch {
+            // GitHub release manifest not published yet
+        }
+    }
+
+    const candidateManifest = remoteManifest || liveManifest;
+    const latestVersion = candidateManifest?.version || currentVersion;
+    const liveContainerNewer = Boolean(liveContainerVersion && compareSemver(liveContainerVersion, currentVersion) > 0);
+    const updateAvailable = compareSemver(latestVersion, currentVersion) > 0 || liveContainerNewer;
+
+    let signatureValid = null;
+    let signatureError = null;
+    if (candidateManifest) {
+        const verification = await signatureVerifier.verifyPluginManifestSignature(candidateManifest);
+        signatureValid = Boolean(verification.valid);
+        signatureError = verification.valid ? null : (verification.error || 'Signature verification failed');
+    }
+
+    return {
+        widgetId,
+        deploymentType,
+        currentVersion,
+        latestVersion,
+        liveContainerVersion,
+        liveContainerNewer,
+        updateAvailable,
+        signatureValid,
+        signatureError,
+        manifestUrl: remoteManifestUrl || widget.manifestUrl,
+        releaseUrl,
+        updaterConfigured: Boolean(process.env.PLUGIN_UPDATER_URL)
+    };
+}
+
+async function updateWidgetPlugin(widgetId, req = null) {
+    const check = await checkPluginUpdate(widgetId);
+    const catalog = await getFullPluginCatalog();
+    const widget = catalog.widgets.find(w => w.id === widgetId);
+    if (!widget) throw new Error(`Widget '${widgetId}' not found`);
+
+    if (check.deploymentType === 'container') {
+        if (check.liveContainerNewer && widget.manifestUrl) {
+            const { remoteManifest, verification } = await fetchAndVerifyExternalManifest(widget.manifestUrl, req);
+            const installedMap = await getInstalledPluginsMap();
+            if (installedMap[widgetId]) {
+                installedMap[widgetId].verifiedManifest = remoteManifest;
+                installedMap[widgetId].signatureVerification = verification;
+                installedMap[widgetId].updatedAt = new Date().toISOString();
+                await saveInstalledPluginsMap(installedMap);
+            }
+            const updatedCatalog = await getFullPluginCatalog();
+            return {
+                updated: true,
+                method: 'live_container_sync',
+                fromVersion: check.currentVersion,
+                toVersion: remoteManifest.version || check.liveContainerVersion,
+                ...updatedCatalog
+            };
+        }
+
+        const updaterUrl = process.env.PLUGIN_UPDATER_URL;
+        if (!updaterUrl) {
+            return {
+                updated: false,
+                requiresHostUpdate: true,
+                deploymentType: 'container',
+                fromVersion: check.currentVersion,
+                toVersion: check.latestVersion,
+                command: 'cd /opt/macosui/repo && sudo bash scripts/deploy-virtual-office.sh',
+                releaseUrl: check.releaseUrl,
+                message: `コンテナ型ウィジェット「${widgetId}」の更新にはホスト側のコンテナ再起動が必要です（PLUGIN_UPDATER_URL 未設定）。`
+            };
+        }
+
+        const upRes = await fetch(`${updaterUrl.replace(/\/$/, '')}/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(60000),
+            body: JSON.stringify({
+                widgetId,
+                targetVersion: check.latestVersion,
+                repository: widget.repository
+            })
+        });
+        if (!upRes.ok) {
+            const errText = await upRes.text().catch(() => '');
+            throw new Error(`Updater service failed (${upRes.status}): ${errText}`);
+        }
+
+        const { remoteManifest, verification } = await fetchAndVerifyExternalManifest(widget.manifestUrl, req);
+        const installedMap = await getInstalledPluginsMap();
+        if (installedMap[widgetId]) {
+            installedMap[widgetId].verifiedManifest = remoteManifest;
+            installedMap[widgetId].signatureVerification = verification;
+            installedMap[widgetId].updatedAt = new Date().toISOString();
+            await saveInstalledPluginsMap(installedMap);
+        }
+        const updatedCatalog = await getFullPluginCatalog();
+        return {
+            updated: true,
+            method: 'host_updater',
+            fromVersion: check.currentVersion,
+            toVersion: remoteManifest.version || check.latestVersion,
+            ...updatedCatalog
+        };
+    }
+
+    // Bundle-type widget update (non-container)
+    if (!check.updateAvailable) {
+        return {
+            updated: false,
+            alreadyLatest: true,
+            deploymentType: 'bundle',
+            fromVersion: check.currentVersion,
+            toVersion: check.latestVersion,
+            ...catalog
+        };
+    }
+
+    if (check.signatureValid === false) {
+        throw new Error(`署名検証に失敗したためアップデートを中止しました: ${check.signatureError}`);
+    }
+
+    const updatedCatalog = await getFullPluginCatalog();
+    return {
+        updated: false,
+        requiresHostUpdate: false,
+        deploymentType: 'bundle',
+        fromVersion: check.currentVersion,
+        toVersion: check.latestVersion,
+        releaseUrl: check.releaseUrl,
+        message: 'バンドル型ウィジェットの更新パッケージを確認しました。',
+        ...updatedCatalog
+    };
+}
+
 module.exports = {
     WIDGET_CATALOG,
     DEFAULT_INSTALLED_IDS,
@@ -1006,6 +1199,8 @@ module.exports = {
     getFullPluginCatalog,
     installWidgetPlugin,
     uninstallWidgetPlugin,
+    checkPluginUpdate,
+    updateWidgetPlugin,
     resetToMinimumConfiguration,
     generateWidgetLicenseKey,
     verifyWidgetLicenseKey,

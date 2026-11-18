@@ -184,6 +184,49 @@ router.post('/plugins/uninstall', async (req, res) => {
     }
 });
 
+// 3a. GET /api/core/plugins/:widgetId/check-update - Check latest version & PQC signature
+router.get('/plugins/:widgetId/check-update', async (req, res) => {
+    if (!hasAdminOrSettingPerm(req.user)) {
+        return res.status(403).json({ error: 'ウィジェット管理権限が必要です' });
+    }
+    try {
+        const result = await pluginManager.checkPluginUpdate(req.params.widgetId);
+        res.json(result);
+    } catch (err) {
+        console.error('[CorePlugins] Check update error:', err);
+        res.status(400).json({ error: err.message || 'アップデート確認に失敗しました' });
+    }
+});
+
+// 3b. POST /api/core/plugins/:widgetId/update - Execute widget update (container sync / host updater)
+router.post('/plugins/:widgetId/update', async (req, res) => {
+    if (!hasAdminOrSettingPerm(req.user)) {
+        return res.status(403).json({ error: 'ウィジェット管理権限が必要です' });
+    }
+    try {
+        const result = await pluginManager.updateWidgetPlugin(req.params.widgetId, req);
+        await auditDb.logEvent({
+            userId: req.user?.id || null,
+            userEmail: req.user?.email || null,
+            eventType: 'plugin_updated',
+            action: 'POST /api/core/plugins/:widgetId/update',
+            status: result.updated ? 'success' : 'pending',
+            req,
+            details: {
+                widgetId: req.params.widgetId,
+                fromVersion: result.fromVersion,
+                toVersion: result.toVersion,
+                method: result.method || null,
+                requiresHostUpdate: Boolean(result.requiresHostUpdate)
+            }
+        });
+        res.json({ success: Boolean(result.updated), ...result });
+    } catch (err) {
+        console.error('[CorePlugins] Update error:', err);
+        res.status(400).json({ error: err.message || 'ウィジェットの更新に失敗しました' });
+    }
+});
+
 // 4. POST /api/core/plugins/reset-minimum - ミニマム構成（ノーマルチャット＋MCPクライアントのみ）へリセット
 router.post('/plugins/reset-minimum', async (req, res) => {
     if (!hasAdminOrSettingPerm(req.user)) {

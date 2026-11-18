@@ -212,28 +212,64 @@ function createCoreHostRouter(helpers = {}) {
         }
     });
 
+    // 5a. GET /api/core/host/ai/translate/status - Check whether Local AI translation is available
+    router.get('/ai/translate/status', async (req, res) => {
+        try {
+            const localAiEnabled = (await db.getSetting('LOCAL_AI_ENABLED')) === 'true';
+            if (!localAiEnabled) {
+                return res.json({ available: false, localAiEnabled: false, reason: 'ローカルAIが無効です' });
+            }
+            const rawHost = await db.getSetting('LOCAL_AI_HOST');
+            const model = await db.getSetting('LOCAL_AI_MODEL');
+            if (!rawHost || !model) {
+                return res.json({ available: false, localAiEnabled: false, reason: 'ローカルAIのホストまたはモデルが未設定です' });
+            }
+            const host = resolveLocalAiHost ? resolveLocalAiHost(rawHost) : rawHost;
+            const pingRes = await fetch(`${host}/api/tags`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(1500)
+            });
+            if (!pingRes.ok) {
+                return res.json({
+                    available: false,
+                    localAiEnabled: true,
+                    model,
+                    reason: `ローカルAI応答エラー (HTTP ${pingRes.status})`
+                });
+            }
+            return res.json({ available: true, localAiEnabled: true, model });
+        } catch (err) {
+            return res.json({
+                available: false,
+                localAiEnabled: false,
+                reason: `ローカルAIに接続できません (${err.message})`
+            });
+        }
+    });
+
     // 5. POST /api/core/host/ai/translate - Local AI multilingual translation proxy
     router.post('/ai/translate', async (req, res) => {
         if (req.agentAuth.levelRank < LEVEL_RANK.execute) {
             return res.status(403).json({ error: 'ZTA Policy Denied: execute level required' });
         }
         const { text, senderLangName, targetLangName } = req.body || {};
-        if (!text) return res.json({ translated: '' });
+        if (!text) return res.json({ translated: '', localAiAvailable: true });
 
         try {
             const localAiEnabled = (await db.getSetting('LOCAL_AI_ENABLED')) === 'true';
             if (!localAiEnabled) {
-                return res.json({ translated: '', localAiEnabled: false });
+                return res.json({ translated: '', localAiEnabled: false, localAiAvailable: false, reason: 'ローカルAIが無効です' });
             }
             const rawHost = await db.getSetting('LOCAL_AI_HOST');
             const model = await db.getSetting('LOCAL_AI_MODEL');
             if (!rawHost || !model) {
-                return res.json({ translated: '', localAiEnabled: false });
+                return res.json({ translated: '', localAiEnabled: false, localAiAvailable: false, reason: 'ローカルAIのホストまたはモデルが未設定です' });
             }
             const host = resolveLocalAiHost ? resolveLocalAiHost(rawHost) : rawHost;
             const transRes = await fetch(`${host}/api/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: AbortSignal.timeout(5000),
                 body: JSON.stringify({
                     model,
                     prompt: `You are an expert translator. Translate the following ${senderLangName} message accurately and naturally into ${targetLangName}. Output ONLY the translated text without quotes or explanations:\n\n"${text}"`,
@@ -245,12 +281,12 @@ function createCoreHostRouter(helpers = {}) {
             if (transRes.ok) {
                 const tData = await transRes.json();
                 const translated = (tData.response || '').trim().replace(/^["']|["']$/g, '');
-                return res.json({ translated, localAiEnabled: true });
+                return res.json({ translated, localAiEnabled: true, localAiAvailable: Boolean(translated) });
             }
-            res.json({ translated: '', localAiEnabled: true });
+            res.json({ translated: '', localAiEnabled: true, localAiAvailable: false, reason: `HTTP ${transRes.status}` });
         } catch (err) {
             console.error('[CoreHostApi] Translation error:', err.message);
-            res.json({ translated: '' });
+            res.json({ translated: '', localAiEnabled: false, localAiAvailable: false, reason: err.message });
         }
     });
 
