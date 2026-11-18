@@ -5,6 +5,8 @@ const db = require('../db.cjs');
 const auditDb = require('../auditDb.cjs');
 const llmAdapter = require('../services/llmAdapter.cjs');
 const pluginManager = require('../services/pluginManager.cjs');
+const { getAllMcpToolsForGemini, callMcpTool, getMcpMetadata } = require('../mcpClient.cjs');
+const mcpHarnessService = require('../services/mcpHarnessService.cjs');
 
 /**
  * Factory creating ZTA-protected Core Platform Host API routes (/api/core/host/*)
@@ -577,6 +579,168 @@ ${freeSlotsText || 'なし'}
         } catch (err) {
             res.status(500).json({ error: err.message });
         }
+    });
+
+    // 10. MCP Chat Host APIs (for decoupled @techies/ea-widget-mcp-chat)
+    router.get('/mcp/meta', async (req, res) => {
+        try {
+            const metadata = await getMcpMetadata(req.user?.allowed_widgets || [], req.user);
+            res.json(metadata);
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    router.post('/mcp/tools', async (req, res) => {
+        try {
+            const { message = '', pipelineDomain = '' } = req.body || {};
+            let mcpTools = await getAllMcpToolsForGemini(req.user?.allowed_widgets || [], req.user);
+            const msgLower = String(message || '').toLowerCase();
+            const isMetaListQuery = msgLower.includes('ツール') && (msgLower.includes('一覧') || msgLower.includes('利用可能') || msgLower.includes('コネクション') || msgLower.includes('available'));
+
+            if (pipelineDomain && pipelineDomain !== 'auto') {
+                const filtered = mcpTools.filter(t => {
+                    if (t.domain === pipelineDomain) return true;
+                    if (t.domain === 'catalog' && (pipelineDomain === 'npb_baseball' || pipelineDomain === 'digital_agency')) return true;
+                    return false;
+                });
+                if (filtered.length > 0) mcpTools = filtered;
+            } else if (!isMetaListQuery) {
+                const matchedDomains = mcpHarnessService.matchDomainsForPrompt(message || '');
+                if (msgLower.includes('阪神') || msgLower.includes('タイガース') || msgLower.includes('ホークス') || msgLower.includes('npb') || msgLower.includes('野球') || msgLower.includes('セ・リーグ') || msgLower.includes('パ・リーグ') || msgLower.includes('batting') || msgLower.includes('pitching') || msgLower.includes('war') || msgLower.includes('打者') || msgLower.includes('投手')) {
+                    matchedDomains.add('npb_baseball');
+                    matchedDomains.add('catalog');
+                }
+                if (msgLower.includes('行政') || msgLower.includes('手続') || msgLower.includes('デジタル庁') || msgLower.includes('マイナンバー') || msgLower.includes('住民票') || msgLower.includes('戸籍') || msgLower.includes('procedures')) {
+                    matchedDomains.add('digital_agency');
+                    matchedDomains.add('catalog');
+                }
+                if (msgLower.includes('ナレッジ') || msgLower.includes('knowledge') || msgLower.includes('マニュアル') || msgLower.includes('社内規程') || msgLower.includes('トークン') || msgLower.includes('token') || msgLower.includes('著者') || msgLower.includes('投稿数') || msgLower.includes('クロス集計')) {
+                    matchedDomains.add('knowledge_base');
+                }
+                if (msgLower.includes('カレンダー') || msgLower.includes('calendar') || msgLower.includes('予定') || msgLower.includes('ミーティング') || msgLower.includes('会議') || msgLower.includes('todo') || msgLower.includes('タスク') || msgLower.includes('gmail')) {
+                    matchedDomains.add('google_workspace');
+                }
+                if (matchedDomains.size > 0) {
+                    const filtered = mcpTools.filter(t => {
+                        if (t.domain && matchedDomains.has(t.domain)) return true;
+                        if (matchedDomains.has('knowledge_base') && (t.name.includes('knowledge') || t.name.includes('author') || t.name.includes('post') || t.name.includes('crosstab'))) return true;
+                        if (matchedDomains.has('npb_baseball') && (t.name.includes('query') || t.name.includes('sql') || t.name.includes('table') || t.name.includes('catalog'))) return true;
+                        if (matchedDomains.has('digital_agency') && (t.name.includes('procedures') || t.name.includes('records') || t.name.includes('catalog'))) return true;
+                        return false;
+                    });
+                    if (filtered.length > 0) mcpTools = filtered;
+                }
+            }
+
+            res.json({
+                tools: mcpTools,
+                harnessConfig: mcpHarnessService.getHarnessConfig()
+            });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    router.post('/mcp/call', async (req, res) => {
+        try {
+            const { funcName, funcArgs = {}, userMessage = '' } = req.body || {};
+            if (!funcName) return res.status(400).json({ error: 'funcName is required' });
+            const result = await callMcpTool(funcName, funcArgs, req.user?.allowed_widgets || [], req.user, req, userMessage);
+            res.json({ result });
+        } catch (err) {
+            res.status(err.status || 500).json({ error: err.message });
+        }
+    });
+
+    router.get('/mcp/config', async (req, res) => {
+        try {
+            const [
+                geminiApiKey,
+                claudeApiKey,
+                aiProvider,
+                globalGeminiModel,
+                globalClaudeModel,
+                configuredMcpModel,
+                configuredClaudeMcpModel,
+                mcpAiProvider,
+                mcpChatSystemInstruction,
+                mcpChatMaxTurns,
+                mcpQuickPromptsRaw
+            ] = await Promise.all([
+                db.getSetting('GEMINI_API_KEY'),
+                db.getSetting('CLAUDE_API_KEY'),
+                db.getSetting('AI_PROVIDER'),
+                db.getSetting('GEMINI_MODEL'),
+                db.getSetting('CLAUDE_MODEL'),
+                db.getSetting('GEMINI_MCP_CHAT_MODEL'),
+                db.getSetting('CLAUDE_MCP_CHAT_MODEL'),
+                db.getSetting('MCP_AI_PROVIDER'),
+                db.getSetting('MCP_CHAT_SYSTEM_INSTRUCTION'),
+                db.getSetting('MCP_CHAT_MAX_TURNS'),
+                db.getSetting('MCP_QUICK_PROMPTS')
+            ]);
+            let mcpQuickPrompts = [];
+            try {
+                if (mcpQuickPromptsRaw) mcpQuickPrompts = JSON.parse(mcpQuickPromptsRaw);
+            } catch (_) {}
+            res.json({
+                geminiApiKey: geminiApiKey || process.env.GEMINI_API_KEY || '',
+                claudeApiKey: claudeApiKey || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY || '',
+                aiProvider: aiProvider || 'gemini',
+                globalGeminiModel: globalGeminiModel || 'gemini-3.6-flash',
+                globalClaudeModel: globalClaudeModel || 'claude-sonnet-4-6',
+                configuredMcpModel: configuredMcpModel || '',
+                configuredClaudeMcpModel: configuredClaudeMcpModel || '',
+                mcpAiProvider: mcpAiProvider || '',
+                mcpChatSystemInstruction: mcpChatSystemInstruction || '',
+                mcpChatMaxTurns: mcpChatMaxTurns || '15',
+                mcpQuickPrompts: Array.isArray(mcpQuickPrompts) ? mcpQuickPrompts : []
+            });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    router.get('/pods', (req, res) => {
+        db.all('SELECT * FROM pods ORDER BY name ASC', [], (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ pods: rows || [] });
+        });
+    });
+
+    router.post('/knowledge/publish', async (req, res) => {
+        try {
+            const { title, content, mimeType } = req.body || {};
+            if (!content) return res.status(400).json({ error: 'Content is required to publish' });
+            const crypto = require('crypto');
+            const id = crypto.randomUUID();
+            await new Promise((resolve, reject) => {
+                db.run(
+                    'INSERT INTO published_reports (id, title, content, mime_type) VALUES (?, ?, ?, ?)',
+                    [id, title || 'Untitled Report', content, mimeType || 'text/html'],
+                    (err) => (err ? reject(err) : resolve())
+                );
+            });
+            res.json({ success: true, id });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    router.post('/knowledge', (req, res) => {
+        const { title, content, tags, input_tokens = 0, output_tokens = 0, pod_id = null } = req.body || {};
+        if (!title) return res.status(400).json({ error: 'Title is required' });
+        const tagsJson = JSON.stringify(tags || []);
+        const tokenCount = (Number(input_tokens) || 0) + (Number(output_tokens) || 0);
+        db.run(
+            'INSERT INTO knowledge_articles (title, content, tags, author_id, token_count, input_tokens, output_tokens, pod_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [title, content || '', tagsJson, req.user.id, tokenCount, input_tokens || 0, output_tokens || 0, pod_id || null],
+            function (err) {
+                if (err) return res.status(500).json({ error: err.message });
+                res.status(201).json({ id: this.lastID, message: 'Article created successfully' });
+            }
+        );
     });
 
     return router;

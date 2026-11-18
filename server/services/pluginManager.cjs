@@ -73,13 +73,20 @@ const WIDGET_CATALOG = [
     },
     {
         id: 'mcp-chat',
-        packageId: 'com.techies.widget.mcp-client',
+        packageId: 'com.techies.widget.mcp-chat',
         name: 'MCP クライアント',
         englishName: 'ZTA MCP Analytics Client',
-        version: '3.0.0',
+        version: '3.1.0',
+        deploymentType: 'container',
+        repository: 'Techies-T/ea-widget-mcp-chat',
         category: 'core_ai',
         iconType: 'mcp-chat',
         defaultInstalled: true,
+        isExternalPlugin: true,
+        defaultServiceUrl: process.env.MCP_CHAT_PLUGIN_URL || 'http://localhost:8092',
+        entrypoints: {
+            main: '/index.html'
+        },
         tier: 'basic_included',
         pricing: {
             model: 'included',
@@ -1118,13 +1125,16 @@ async function updateWidgetPlugin(widgetId, req = null) {
 
         const updaterUrl = process.env.PLUGIN_UPDATER_URL;
         if (!updaterUrl) {
+            const fallbackDeployCmd = widgetId === 'mcp-chat'
+                ? 'cd /opt/macosui/repo && sudo bash scripts/deploy-mcp-chat.sh'
+                : 'cd /opt/macosui/repo && sudo bash scripts/deploy-virtual-office.sh';
             return {
                 updated: false,
                 requiresHostUpdate: true,
                 deploymentType: 'container',
                 fromVersion: check.currentVersion,
                 toVersion: check.latestVersion,
-                command: 'cd /opt/macosui/repo && sudo bash scripts/deploy-virtual-office.sh',
+                command: fallbackDeployCmd,
                 releaseUrl: check.releaseUrl,
                 message: `コンテナ型ウィジェット「${widgetId}」の更新にはホスト側のコンテナ再起動が必要です（PLUGIN_UPDATER_URL 未設定）。`
             };

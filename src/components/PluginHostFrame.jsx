@@ -141,7 +141,16 @@ const PluginHostFrame = ({
             },
             trustedTargetOrigin
         );
-    }, [cleanWidgetId, widgetLevel, capabilities, user, trustedTargetOrigin]);
+        if (pluginParams && Object.keys(pluginParams).length > 0) {
+            win.postMessage(
+                {
+                    type: 'EA_WIDGET_PROPS',
+                    props: pluginParams
+                },
+                trustedTargetOrigin
+            );
+        }
+    }, [cleanWidgetId, widgetLevel, capabilities, user, pluginParams, trustedTargetOrigin]);
 
     useEffect(() => {
         let cancelled = false;
@@ -227,6 +236,15 @@ const PluginHostFrame = ({
                             customHeight: height || subMeta.defaultHeight || 520
                         }
                     );
+                }
+                return;
+            }
+
+            // 3.5. Launch another EA-Core app from plugin (e.g. McpChat opening Browser or LiveConcierge)
+            if (data.type === 'EA_OPEN_APP' && onOpen) {
+                const { windowId, appType, title: appTitle, props = {} } = data.payload || {};
+                if (windowId && appType) {
+                    onOpen(windowId, appType, appTitle || appType, props);
                 }
                 return;
             }

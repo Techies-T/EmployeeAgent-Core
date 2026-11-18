@@ -15,6 +15,9 @@ DEPLOY_MCP_STACK="${DEPLOY_MCP_STACK:-true}"
 DEPLOY_VIRTUAL_OFFICE="${DEPLOY_VIRTUAL_OFFICE:-false}"
 VIRTUAL_OFFICE_DIR="${VIRTUAL_OFFICE_DIR:-$(dirname "$REPO_DIR")/ea-widget-virtual-office}"
 VIRTUAL_OFFICE_REPO="${VIRTUAL_OFFICE_REPO:-https://github.com/Techies-T/ea-widget-virtual-office.git}"
+DEPLOY_MCP_CHAT="${DEPLOY_MCP_CHAT:-true}"
+MCP_CHAT_DIR="${MCP_CHAT_DIR:-$(dirname "$REPO_DIR")/ea-widget-mcp-chat}"
+MCP_CHAT_REPO="${MCP_CHAT_REPO:-https://github.com/Techies-T/ea-widget-mcp-chat.git}"
 
 echo "=================================================="
 echo "🔒 [Step 1/5] Persistent Storage & Pre-deploy Safety Check"
@@ -116,6 +119,20 @@ if [ "$DEPLOY_VIRTUAL_OFFICE" = "true" ]; then
     echo "Virtual Office Commit: $(git -C "$VIRTUAL_OFFICE_DIR" log -1 --oneline)"
 fi
 
+if [ "$DEPLOY_MCP_CHAT" = "true" ]; then
+    echo "🔄 Syncing ea-widget-mcp-chat at $MCP_CHAT_DIR..."
+    if [ -d "$MCP_CHAT_DIR/.git" ]; then
+        git -C "$MCP_CHAT_DIR" fetch origin --tags -f
+        git -C "$MCP_CHAT_DIR" checkout main
+        git -C "$MCP_CHAT_DIR" pull origin main
+    else
+        git clone "$MCP_CHAT_REPO" "$MCP_CHAT_DIR" || echo "⚠️ Could not clone $MCP_CHAT_REPO yet; skipping mcp-chat sync."
+    fi
+    if [ -d "$MCP_CHAT_DIR/.git" ]; then
+        echo "MCP Chat Commit: $(git -C "$MCP_CHAT_DIR" log -1 --oneline)"
+    fi
+fi
+
 echo "=================================================="
 echo "🐳 [Step 4/5] Rebuild and Restart Containers"
 echo "=================================================="
@@ -127,10 +144,9 @@ elif docker compose version >/dev/null 2>&1; then
 fi
 
 if [ "$DEPLOY_MCP_STACK" = "true" ] && [ -f "docker-compose.full.yml" ]; then
-    if [ "$DEPLOY_VIRTUAL_OFFICE" = "true" ]; then
-        echo "🛡️ Deploying Full Stack + Virtual Office Plugin (EA-Core + ZTA-MCP-Gateway + MariaDB NPB + Digital Agency MCP + Virtual Office)..."
-        # Remove any standalone ea-widget-virtual-office container so compose can manage it cleanly
-        sudo docker rm -f ea-widget-virtual-office 2>/dev/null || true
+    if [ "$DEPLOY_VIRTUAL_OFFICE" = "true" ] || { [ "$DEPLOY_MCP_CHAT" = "true" ] && [ -d "$MCP_CHAT_DIR" ]; }; then
+        echo "🛡️ Deploying Full Stack + External Plugin Services..."
+        sudo docker rm -f ea-widget-virtual-office ea-widget-mcp-chat 2>/dev/null || true
         sudo $COMPOSE_CMD -f docker-compose.full.yml --profile plugin-service up -d --build --force-recreate
     else
         echo "🛡️ Deploying Full Stack (EA-Core + ZTA-MCP-Gateway + MariaDB NPB + Digital Agency MCP)..."
