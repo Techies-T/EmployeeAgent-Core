@@ -12,7 +12,7 @@ set -e
 REPO_DIR="${REPO_DIR:-/opt/macosui/repo}"
 DATA_VOLUME="${DATA_VOLUME:-/app/data}"
 DEPLOY_MCP_STACK="${DEPLOY_MCP_STACK:-true}"
-DEPLOY_VIRTUAL_OFFICE="${DEPLOY_VIRTUAL_OFFICE:-true}"
+DEPLOY_VIRTUAL_OFFICE="${DEPLOY_VIRTUAL_OFFICE:-false}"
 VIRTUAL_OFFICE_DIR="${VIRTUAL_OFFICE_DIR:-$(dirname "$REPO_DIR")/ea-widget-virtual-office}"
 VIRTUAL_OFFICE_REPO="${VIRTUAL_OFFICE_REPO:-https://github.com/Techies-T/ea-widget-virtual-office.git}"
 
