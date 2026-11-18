@@ -74,6 +74,8 @@ const AiHubTab = ({
     handleNanoBananaModelChange,
     geminiLiveDefaultModel,
     refreshModelsList,
+    isRefreshingModels = false,
+    modelsRefreshStatus = '',
     localAiEnabled,
     setLocalAiEnabled,
     localAiHost,
@@ -212,14 +214,24 @@ const AiHubTab = ({
                             ノーマルチャット (Gemini / Claude) や MCP クライアント等、すべてのウィジェットで利用する API キーを一元管理します。
                         </p>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                        {modelsRefreshStatus && (
+                            <span className={`text-[11px] font-medium px-2 py-1 rounded ${
+                                modelsRefreshStatus.startsWith('⚠️')
+                                    ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            }`}>
+                                {modelsRefreshStatus}
+                            </span>
+                        )}
                         {refreshModelsList && (
                             <button
                                 type="button"
                                 onClick={refreshModelsList}
-                                className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg border border-gray-300 font-medium cursor-pointer transition"
+                                disabled={isRefreshingModels}
+                                className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 disabled:opacity-60 disabled:cursor-wait text-gray-700 rounded-lg border border-gray-300 font-medium cursor-pointer transition"
                             >
-                                🔄 モデル一覧を再取得
+                                {isRefreshingModels ? '🔄 取得中...' : '🔄 モデル一覧を再取得'}
                             </button>
                         )}
                         <button
@@ -483,6 +495,14 @@ const AiHubTab = ({
                                                             </option>
                                                         );
                                                     })}
+                                                    {(!filteredModels || filteredModels.length === 0) && (
+                                                        <>
+                                                            <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite Preview (gemini-3.1-flash-lite-preview)</option>
+                                                            <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview (gemini-3.1-pro-preview)</option>
+                                                            <option value="gemini-2.5-flash">Gemini 2.5 Flash (gemini-2.5-flash)</option>
+                                                            <option value="gemini-2.5-pro">Gemini 2.5 Pro (gemini-2.5-pro)</option>
+                                                        </>
+                                                    )}
                                                 </select>
                                             )}
                                         </td>

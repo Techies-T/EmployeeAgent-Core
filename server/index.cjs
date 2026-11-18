@@ -3184,7 +3184,20 @@ const DEFAULT_GEMINI_MODELS = [
     }
 ];
 
-app.get('/api/gemini/models', requireAuth, requireWidgetAccess('app:gemini'), async (req, res) => {
+app.get('/api/gemini/models', requireAuth, async (req, res, next) => {
+    const allowedWidgets = req.user?.allowed_widgets || [];
+    const allowedActions = req.user?.allowed_actions || [];
+    const canListModels =
+        allowedWidgets.includes('*') ||
+        allowedWidgets.includes('app:gemini') ||
+        allowedActions.includes('*') ||
+        allowedActions.includes('action:manage_system_settings') ||
+        allowedActions.includes('action:edit_workflow_model');
+    if (!canListModels) {
+        return requireWidgetAccess('app:gemini')(req, res, next);
+    }
+    return next();
+}, async (req, res) => {
     try {
         const apiKey = await db.getSetting('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
         const claudeApiKey = await db.getSetting('CLAUDE_API_KEY') || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
@@ -3212,7 +3225,7 @@ app.get('/api/gemini/models', requireAuth, requireWidgetAccess('app:gemini'), as
             });
         }
 
-        const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: 60000 } });
+        const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: 10000 } });
         const response = await client.models.list();
 
         let modelsList = [];

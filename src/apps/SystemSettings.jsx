@@ -37,6 +37,8 @@ const SystemSettings = ({ user }) => {
     const [activeTab, setActiveTab] = useState('General');
     const [models, setModels] = useState([]);
     const [claudeModels, setClaudeModels] = useState([]);
+    const [isRefreshingModels, setIsRefreshingModels] = useState(false);
+    const [modelsRefreshStatus, setModelsRefreshStatus] = useState('');
     const [aiProvider, setAiProvider] = useState('gemini');
     const [currentModel, setCurrentModel] = useState('');
     const [currentClaudeModel, setCurrentClaudeModel] = useState('claude-sonnet-4-6');
@@ -117,14 +119,28 @@ const SystemSettings = ({ user }) => {
 
 
     const refreshModelsList = async () => {
-        if (!canSelectModel) return;
+        if (!canSelectModel) {
+            setModelsRefreshStatus('⚠️ モデル一覧の取得権限がありません');
+            return;
+        }
+        setIsRefreshingModels(true);
+        setModelsRefreshStatus('');
         try {
-            const [gemRes, claudeRes] = await Promise.all([
-                fetch('/api/gemini/models').then(r => r.json()).catch(() => ({})),
-                fetch('/api/claude/models').then(r => r.json()).catch(() => ({}))
+            const [gemHttp, claudeHttp] = await Promise.all([
+                fetch('/api/gemini/models'),
+                fetch('/api/claude/models')
             ]);
-            if (Array.isArray(gemRes.models)) setModels(gemRes.models);
-            
+            const gemRes = await gemHttp.json().catch(() => ({}));
+            const claudeRes = await claudeHttp.json().catch(() => ({}));
+
+            let geminiCount = 0;
+            if (gemHttp.ok && Array.isArray(gemRes.models) && gemRes.models.length > 0) {
+                setModels(gemRes.models);
+                geminiCount = gemRes.models.length;
+            } else if (!gemHttp.ok) {
+                console.warn('Failed to fetch /api/gemini/models:', gemHttp.status, gemRes);
+            }
+
             const cList = Array.isArray(claudeRes.models)
                 ? claudeRes.models
                 : (Array.isArray(claudeRes)
@@ -133,8 +149,17 @@ const SystemSettings = ({ user }) => {
             if (cList.length > 0) {
                 setClaudeModels(cList);
             }
+
+            if (!gemHttp.ok) {
+                setModelsRefreshStatus(`⚠️ Gemini モデル取得エラー (HTTP ${gemHttp.status})`);
+            } else {
+                setModelsRefreshStatus(`✅ モデル一覧を更新しました (Gemini: ${geminiCount}件 / Claude: ${cList.length}件)`);
+            }
         } catch (err) {
             console.error("Failed to refresh models", err);
+            setModelsRefreshStatus('⚠️ モデル一覧の取得に失敗しました');
+        } finally {
+            setIsRefreshingModels(false);
         }
     };
 
@@ -994,6 +1019,8 @@ const SystemSettings = ({ user }) => {
                         handleNanoBananaModelChange={handleNanoBananaModelChange}
                         geminiLiveDefaultModel={geminiLiveDefaultModel}
                         refreshModelsList={refreshModelsList}
+                        isRefreshingModels={isRefreshingModels}
+                        modelsRefreshStatus={modelsRefreshStatus}
                         localAiEnabled={localAiEnabled}
                         setLocalAiEnabled={setLocalAiEnabled}
                         localAiHost={localAiHost}
