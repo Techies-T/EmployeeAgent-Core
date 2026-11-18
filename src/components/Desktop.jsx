@@ -264,7 +264,7 @@ const Desktop = ({ user, onLogout, config }) => {
     openWindow(`plugin-subview-${pId}-${sView}-${sId}`, subViewType, `Chat with ${sName}`, {
       customWidth: 380,
       customHeight: 520,
-      targetUser: { id: sId, name: sName, avatar_url: sAvatar }
+      targetUser: { id: sId, name: sName }
     });
     setNotifications(prev => prev.filter(n => n.senderId !== sId));
   };

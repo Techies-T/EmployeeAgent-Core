@@ -72,7 +72,15 @@ const PluginHostFrame = ({
         if (pluginParams && typeof pluginParams === 'object') {
             for (const [k, v] of Object.entries(pluginParams)) {
                 if (v !== undefined && v !== null) {
-                    urlObj.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+                    let sanitized = v;
+                    if (typeof v === 'object' && v !== null && typeof v.avatar_url === 'string' && (v.avatar_url.startsWith('data:') || v.avatar_url.length > 512)) {
+                        const { avatar_url: _omit, ...rest } = v;
+                        sanitized = rest;
+                    }
+                    const serialized = typeof sanitized === 'object' ? JSON.stringify(sanitized) : String(sanitized);
+                    if (serialized.length <= 1500) {
+                        urlObj.searchParams.set(k, serialized);
+                    }
                 }
             }
         }
