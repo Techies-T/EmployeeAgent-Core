@@ -266,10 +266,17 @@ function createCoreHostRouter(helpers = {}) {
                 return res.json({ translated: '', localAiEnabled: false, localAiAvailable: false, reason: 'ローカルAIのホストまたはモデルが未設定です' });
             }
             const host = resolveLocalAiHost ? resolveLocalAiHost(rawHost) : rawHost;
+            const pingRes = await fetch(`${host}/api/tags`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(1200)
+            });
+            if (!pingRes.ok) {
+                return res.json({ translated: '', localAiEnabled: true, localAiAvailable: false, reason: `ローカルAI応答エラー (HTTP ${pingRes.status})` });
+            }
             const transRes = await fetch(`${host}/api/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                signal: AbortSignal.timeout(5000),
+                signal: AbortSignal.timeout(15000),
                 body: JSON.stringify({
                     model,
                     prompt: `You are an expert translator. Translate the following ${senderLangName} message accurately and naturally into ${targetLangName}. Output ONLY the translated text without quotes or explanations:\n\n"${text}"`,
@@ -335,9 +342,17 @@ Instructions:
 4. Output only the final assistant chat response without any meta commentary.`;
 
                     try {
+                        const pingRes = await fetch(`${host}/api/tags`, {
+                            method: 'GET',
+                            signal: AbortSignal.timeout(1200)
+                        });
+                        if (!pingRes.ok) {
+                            throw new Error(`Local AI unreachable (HTTP ${pingRes.status})`);
+                        }
                         const ollamaRes = await fetch(`${host}/api/generate`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
+                            signal: AbortSignal.timeout(20000),
                             body: JSON.stringify({
                                 model: localModel,
                                 prompt: `Team Member (${senderName}) says: "${messageText}"`,
