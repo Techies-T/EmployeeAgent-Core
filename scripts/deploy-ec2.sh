@@ -12,6 +12,9 @@ set -e
 REPO_DIR="${REPO_DIR:-/opt/macosui/repo}"
 DATA_VOLUME="${DATA_VOLUME:-/app/data}"
 DEPLOY_MCP_STACK="${DEPLOY_MCP_STACK:-true}"
+DEPLOY_VIRTUAL_OFFICE="${DEPLOY_VIRTUAL_OFFICE:-true}"
+VIRTUAL_OFFICE_DIR="${VIRTUAL_OFFICE_DIR:-$(dirname "$REPO_DIR")/ea-widget-virtual-office}"
+VIRTUAL_OFFICE_REPO="${VIRTUAL_OFFICE_REPO:-https://github.com/Techies-T/ea-widget-virtual-office.git}"
 
 echo "=================================================="
 echo "🔒 [Step 1/5] Persistent Storage & Pre-deploy Safety Check"
@@ -101,6 +104,18 @@ git checkout main
 git pull origin main
 echo "Current Commit: $(git log -1 --oneline)"
 
+if [ "$DEPLOY_VIRTUAL_OFFICE" = "true" ]; then
+    echo "🔄 Syncing ea-widget-virtual-office at $VIRTUAL_OFFICE_DIR..."
+    if [ -d "$VIRTUAL_OFFICE_DIR/.git" ]; then
+        git -C "$VIRTUAL_OFFICE_DIR" fetch origin --tags -f
+        git -C "$VIRTUAL_OFFICE_DIR" checkout main
+        git -C "$VIRTUAL_OFFICE_DIR" pull origin main
+    else
+        git clone "$VIRTUAL_OFFICE_REPO" "$VIRTUAL_OFFICE_DIR"
+    fi
+    echo "Virtual Office Commit: $(git -C "$VIRTUAL_OFFICE_DIR" log -1 --oneline)"
+fi
+
 echo "=================================================="
 echo "🐳 [Step 4/5] Rebuild and Restart Containers"
 echo "=================================================="
@@ -112,8 +127,15 @@ elif docker compose version >/dev/null 2>&1; then
 fi
 
 if [ "$DEPLOY_MCP_STACK" = "true" ] && [ -f "docker-compose.full.yml" ]; then
-    echo "🛡️ Deploying Full Stack (EA-Core + ZTA-MCP-Gateway + MariaDB NPB + Digital Agency MCP)..."
-    sudo $COMPOSE_CMD -f docker-compose.full.yml up -d --build --force-recreate
+    if [ "$DEPLOY_VIRTUAL_OFFICE" = "true" ]; then
+        echo "🛡️ Deploying Full Stack + Virtual Office Plugin (EA-Core + ZTA-MCP-Gateway + MariaDB NPB + Digital Agency MCP + Virtual Office)..."
+        # Remove any standalone ea-widget-virtual-office container so compose can manage it cleanly
+        sudo docker rm -f ea-widget-virtual-office 2>/dev/null || true
+        sudo $COMPOSE_CMD -f docker-compose.full.yml --profile plugin-service up -d --build --force-recreate
+    else
+        echo "🛡️ Deploying Full Stack (EA-Core + ZTA-MCP-Gateway + MariaDB NPB + Digital Agency MCP)..."
+        sudo $COMPOSE_CMD -f docker-compose.full.yml up -d --build --force-recreate
+    fi
     sleep 6
     echo "⚾ Seeding NPB 2024-2026 dataset into MariaDB..."
     sudo docker exec -i test_mariadb mariadb -u root -pmy-secret-pw testdb < scripts/setup_npb_data.sql 2>/dev/null || true
