@@ -285,7 +285,7 @@ const PluginHostFrame = ({
                     src={resolvedSrc}
                     title={title}
                     className="w-full h-full border-0"
-                    sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox"
                     onLoad={() => {
                         setIsLoading(false);
                         sendInitContextToIframe();
