@@ -3225,17 +3225,17 @@ app.get('/api/gemini/models', requireAuth, async (req, res, next) => {
             });
         }
 
-        const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: 10000 } });
-        const response = await client.models.list();
+        const client = new GoogleGenAI({ apiKey, httpOptions: { timeout: 15000 } });
+        const response = await client.models.list({ config: { pageSize: 100 } });
 
         let modelsList = [];
         try {
-            if (response && response.page && Array.isArray(response.page)) {
-                modelsList = response.page;
-            } else if (response && typeof response[Symbol.asyncIterator] === 'function') {
+            if (response && typeof response[Symbol.asyncIterator] === 'function') {
                 for await (const m of response) {
                     modelsList.push(m);
                 }
+            } else if (response && response.page && Array.isArray(response.page)) {
+                modelsList = response.page;
             } else {
                 const jsonResponse = JSON.parse(JSON.stringify(response));
                 modelsList = jsonResponse.models || jsonResponse.pageInternal || [];
@@ -3244,17 +3244,22 @@ app.get('/api/gemini/models', requireAuth, async (req, res, next) => {
             console.warn("Could not iterate model pager, using fallback list:", iterErr.message);
         }
 
-        // Filter and format models
-        let models = modelsList.filter(m =>
-            !m.supportedActions || m.supportedActions.includes('generateContent')
-        ).map(m => ({
-            name: m.name,
-            displayName: m.displayName || m.name,
-            description: m.description || '',
-            inputTokenLimit: m.inputTokenLimit || 1048576,
-            outputTokenLimit: m.outputTokenLimit || 8192,
-            provider: 'gemini'
-        }));
+        // Return all models returned by the API so Admin can choose any available model
+        const seenNames = new Set();
+        let models = [];
+        for (const m of modelsList) {
+            if (!m || !m.name || seenNames.has(m.name)) continue;
+            seenNames.add(m.name);
+            models.push({
+                name: m.name,
+                displayName: m.displayName || m.name,
+                description: m.description || '',
+                inputTokenLimit: m.inputTokenLimit || 1048576,
+                outputTokenLimit: m.outputTokenLimit || 8192,
+                supportedActions: m.supportedActions || [],
+                provider: 'gemini'
+            });
+        }
 
         if (models.length === 0) {
             models = DEFAULT_GEMINI_MODELS.map(m => ({ ...m, provider: 'gemini' }));

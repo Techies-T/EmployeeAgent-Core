@@ -297,30 +297,46 @@ async function listClaudeModels(apiKey, db) {
     }
 
     try {
-        const response = await anthropicHttpsRequest('/v1/models?limit=100', {
-            method: 'GET',
-            headers: {
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json'
+        const apiModels = [];
+        let afterId = null;
+        let hasMore = true;
+        let pageCount = 0;
+
+        while (hasMore && pageCount < 10) {
+            pageCount += 1;
+            const query = afterId ? `/v1/models?limit=100&after_id=${encodeURIComponent(afterId)}` : '/v1/models?limit=100';
+            const response = await anthropicHttpsRequest(query, {
+                method: 'GET',
+                headers: {
+                    'x-api-key': apiKey,
+                    'anthropic-version': '2023-06-01',
+                    'content-type': 'application/json'
+                }
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                console.warn(`[LLM Adapter] Anthropic /v1/models returned ${response.status}: ${errText}`);
+                if (apiModels.length === 0) {
+                    return Array.isArray(cachedModels) && cachedModels.length > 0 ? cachedModels : INITIAL_CLAUDE_MODELS;
+                }
+                break;
             }
-        });
 
-        if (!response.ok) {
-            const errText = await response.text();
-            console.warn(`[LLM Adapter] Anthropic /v1/models returned ${response.status}: ${errText}`);
-            return Array.isArray(cachedModels) && cachedModels.length > 0 ? cachedModels : INITIAL_CLAUDE_MODELS;
+            const data = await response.json();
+            const pageItems = Array.isArray(data.data) ? data.data : [];
+            apiModels.push(...pageItems);
+
+            hasMore = Boolean(data.has_more && data.last_id);
+            afterId = data.last_id || null;
         }
-
-        const data = await response.json();
-        const apiModels = Array.isArray(data.data) ? data.data : [];
 
         if (apiModels.length === 0) {
             return Array.isArray(cachedModels) && cachedModels.length > 0 ? cachedModels : INITIAL_CLAUDE_MODELS;
         }
 
         const formatted = apiModels
-            .filter(m => m && m.id && isClaudeModel(m.id))
+            .filter(m => m && m.id)
             .map(m => ({
                 name: m.id,
                 displayName: m.display_name ? `${m.display_name} (${m.id})` : m.id,
