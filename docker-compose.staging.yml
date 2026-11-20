@@ -19,7 +19,8 @@ services:
       - "host.docker.internal:host-gateway"
 
   nginx:
-    image: nginx:alpine
+    # Patched against nginx2root (CVE-2026-123007, CVE-2026-123633, CVE-2026-123634)
+    image: nginx:1.30.7-alpine
     container_name: macosui-nginx
     restart: unless-stopped
     ports:

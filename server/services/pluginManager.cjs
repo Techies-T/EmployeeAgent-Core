@@ -1,9 +1,24 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const db = require('../db.cjs');
 const auditDb = require('../auditDb.cjs');
 const signatureVerifier = require('./pluginSignatureVerifier.cjs');
+
+function createUpdaterA2AToken(widgetId, action = 'update') {
+    return jwt.sign(
+        {
+            sub: 'ea-core-plugin-manager',
+            aud: 'service:plugin-updater',
+            type: 'a2a_updater_token',
+            widgetId,
+            action
+        },
+        process.env.JWT_SECRET || 'secret',
+        { expiresIn: '2m' }
+    );
+}
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..');
 const PLUGINS_DIR = path.join(DATA_DIR, 'plugins');
@@ -770,7 +785,53 @@ async function installWidgetPlugin(widgetId, options = {}) {
             resolvedManifestUrl = `${resolvedServiceUrl}/widget.manifest.json`;
         }
 
-        const verified = await fetchAndVerifyExternalManifest(resolvedManifestUrl, req);
+        let verified;
+        try {
+            verified = await fetchAndVerifyExternalManifest(resolvedManifestUrl, req);
+        } catch (initialFetchErr) {
+            const updaterUrl = process.env.PLUGIN_UPDATER_URL;
+            const isContainerWidget = (catalogItem?.deploymentType === 'container' || catalogItem?.isExternalPlugin) && catalogItem?.repository;
+            if (updaterUrl && isContainerWidget && widgetId) {
+                console.log(`[PluginManager] Container unreachable for '${widgetId}'. Auto-provisioning via ea-plugin-updater...`);
+                let imageRef = null;
+                let targetVersion = catalogItem.version || null;
+                try {
+                    const imgMetaRes = await fetch(`https://github.com/${catalogItem.repository}/releases/latest/download/container-image.json`, {
+                        headers: { Accept: 'application/json' },
+                        signal: AbortSignal.timeout(4000)
+                    });
+                    if (imgMetaRes.ok) {
+                        const imgMeta = await imgMetaRes.json();
+                        imageRef = imgMeta.imageDigest || imgMeta.image || null;
+                        if (imgMeta.version) targetVersion = imgMeta.version;
+                    }
+                } catch {
+                    // Fallback to tag-based pull
+                }
+
+                const upRes = await fetch(`${updaterUrl.replace(/\/$/, '')}/install`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${createUpdaterA2AToken(widgetId, 'install')}`
+                    },
+                    signal: AbortSignal.timeout(180000),
+                    body: JSON.stringify({
+                        widgetId,
+                        targetVersion,
+                        imageRef,
+                        repository: catalogItem.repository
+                    })
+                });
+                if (!upRes.ok) {
+                    const errBody = await upRes.json().catch(() => ({}));
+                    throw new Error(errBody.error || `ea-plugin-updater によるコンテナ自動インストールに失敗しました (HTTP ${upRes.status})`);
+                }
+                verified = await fetchAndVerifyExternalManifest(resolvedManifestUrl, req);
+            } else {
+                throw initialFetchErr;
+            }
+        }
         resolvedManifest = verified.remoteManifest;
         signatureVerification = verified.signatureVerification;
         if (!widgetId) {
@@ -1052,6 +1113,7 @@ async function checkPluginUpdate(widgetId) {
 
     let remoteManifest = null;
     let remoteManifestUrl = null;
+    let remoteImageRef = null;
     let releaseUrl = repo ? `https://github.com/${repo}/releases/latest` : null;
     if (repo) {
         remoteManifestUrl = `https://github.com/${repo}/releases/latest/download/widget.manifest.json`;
@@ -1065,6 +1127,18 @@ async function checkPluginUpdate(widgetId) {
             }
         } catch {
             // GitHub release manifest not published yet
+        }
+        try {
+            const imgMetaRes = await fetch(`https://github.com/${repo}/releases/latest/download/container-image.json`, {
+                headers: { Accept: 'application/json' },
+                signal: AbortSignal.timeout(4000)
+            });
+            if (imgMetaRes.ok) {
+                const imgMeta = await imgMetaRes.json();
+                remoteImageRef = imgMeta.imageDigest || imgMeta.image || null;
+            }
+        } catch {
+            // container-image.json not published yet
         }
     }
 
@@ -1092,6 +1166,7 @@ async function checkPluginUpdate(widgetId) {
         signatureValid,
         signatureError,
         manifestUrl: remoteManifestUrl || widget.manifestUrl,
+        imageRef: remoteImageRef,
         releaseUrl,
         updaterConfigured: Boolean(process.env.PLUGIN_UPDATER_URL)
     };
@@ -1142,16 +1217,21 @@ async function updateWidgetPlugin(widgetId, req = null) {
 
         const upRes = await fetch(`${updaterUrl.replace(/\/$/, '')}/update`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: AbortSignal.timeout(60000),
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${createUpdaterA2AToken(widgetId, 'update')}`
+            },
+            signal: AbortSignal.timeout(180000),
             body: JSON.stringify({
                 widgetId,
                 targetVersion: check.latestVersion,
+                imageRef: check.imageRef || null,
                 repository: widget.repository
             })
         });
         if (!upRes.ok) {
-            const errText = await upRes.text().catch(() => '');
+            const errJson = await upRes.json().catch(() => null);
+            const errText = errJson?.error || (await upRes.text().catch(() => ''));
             throw new Error(`Updater service failed (${upRes.status}): ${errText}`);
         }
 

@@ -23,6 +23,7 @@ services:
       - VIRTUAL_OFFICE_PLUGIN_URL=http://ea-widget-virtual-office:8091
       - MCP_CHAT_PLUGIN_URL=http://ea-widget-mcp-chat:8092
       - EA_CORE_INTERNAL_URL=http://macosui-local:8080
+      - PLUGIN_UPDATER_URL=http://ea-plugin-updater:8099
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -169,6 +170,29 @@ services:
       - ${DATA_DIR:-./data}:/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # ============================================================================
+  # 7. EA-Plugin-Updater Sidecar (Zero-Trust One-Click Plugin Install & VUP)
+  #    No external ports exposed. Only accessible from macosui-local via A2A JWT.
+  # ============================================================================
+  plugin-updater:
+    build:
+      context: ./plugin-updater
+      dockerfile: Dockerfile
+    image: techies-t/ea-plugin-updater:latest
+    container_name: ea-plugin-updater
+    restart: unless-stopped
+    env_file:
+      - server/development.env
+    environment:
+      - PORT=8099
+      - CORE_CONTAINER_NAME=macosui-local
+      - VERIFY_COSIGN=${VERIFY_COSIGN:-true}
+      - NODE_ENV=production
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - macosui
 
 networks:
   default:

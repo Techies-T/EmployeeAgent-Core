@@ -1,0 +1,13 @@
+{
+  "name": "ea-plugin-updater",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zero-Trust isolated Docker sidecar for one-click verified plugin install/update/rollback from EA-Core Store",
+  "main": "server.cjs",
+  "scripts": {
+    "start": "node server.cjs"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2"
+  }
+}
