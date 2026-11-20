@@ -463,6 +463,17 @@ const WidgetStoreTab = ({
                                                 </span>
                                             </div>
                                         )}
+                                        {updatingMap[widget.id] === 'updating' && (
+                                            <div className="mt-2.5 p-2.5 rounded-lg bg-indigo-50 border border-indigo-200 flex items-start gap-2 text-[11px] text-indigo-900">
+                                                <span className="inline-block w-3.5 h-3.5 mt-0.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin shrink-0" />
+                                                <div className="leading-relaxed">
+                                                    <div className="font-bold">アップデートを実行中です（数十秒〜1分ほどかかります）</div>
+                                                    <div className="text-[10px] text-indigo-700 mt-0.5">
+                                                        Cosign 証明書検証 → コンテナイメージ取得 → 再起動＆ヘルスチェック → PQC 署名検証を自動実行しています。画面を閉じずにしばらくお待ちください。
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
 
                                     <div className="pt-3 border-t border-gray-200/70 flex items-center justify-between gap-2">
@@ -484,7 +495,7 @@ const WidgetStoreTab = ({
                                                             className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-2xs cursor-pointer transition disabled:opacity-50"
                                                         >
                                                             {updatingMap[widget.id] === 'updating'
-                                                                ? '更新中...'
+                                                                ? '⏳ 更新中（数十秒かかります）...'
                                                                 : `⬆️ v${updateInfoMap[widget.id].latestVersion} へ Update`}
                                                         </button>
                                                     ) : (
