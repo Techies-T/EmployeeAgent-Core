@@ -76,7 +76,7 @@ const WIDGET_CATALOG = [
         packageId: 'com.techies.widget.mcp-chat',
         name: 'MCP クライアント',
         englishName: 'ZTA MCP Analytics Client',
-        version: '3.1.0',
+        version: '1.0.0',
         deploymentType: 'container',
         repository: 'Techies-T/ea-widget-mcp-chat',
         category: 'core_ai',
@@ -1105,11 +1105,11 @@ async function updateWidgetPlugin(widgetId, req = null) {
 
     if (check.deploymentType === 'container') {
         if (check.liveContainerNewer && widget.manifestUrl) {
-            const { remoteManifest, verification } = await fetchAndVerifyExternalManifest(widget.manifestUrl, req);
+            const { remoteManifest, signatureVerification } = await fetchAndVerifyExternalManifest(widget.manifestUrl, req);
             const installedMap = await getInstalledPluginsMap();
             if (installedMap[widgetId]) {
                 installedMap[widgetId].verifiedManifest = remoteManifest;
-                installedMap[widgetId].signatureVerification = verification;
+                installedMap[widgetId].signatureVerification = signatureVerification;
                 installedMap[widgetId].updatedAt = new Date().toISOString();
                 await saveInstalledPluginsMap(installedMap);
             }
@@ -1155,11 +1155,11 @@ async function updateWidgetPlugin(widgetId, req = null) {
             throw new Error(`Updater service failed (${upRes.status}): ${errText}`);
         }
 
-        const { remoteManifest, verification } = await fetchAndVerifyExternalManifest(widget.manifestUrl, req);
+        const { remoteManifest, signatureVerification } = await fetchAndVerifyExternalManifest(widget.manifestUrl, req);
         const installedMap = await getInstalledPluginsMap();
         if (installedMap[widgetId]) {
             installedMap[widgetId].verifiedManifest = remoteManifest;
-            installedMap[widgetId].signatureVerification = verification;
+            installedMap[widgetId].signatureVerification = signatureVerification;
             installedMap[widgetId].updatedAt = new Date().toISOString();
             await saveInstalledPluginsMap(installedMap);
         }
