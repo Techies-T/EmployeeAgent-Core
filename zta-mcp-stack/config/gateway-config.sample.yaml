@@ -26,7 +26,7 @@ secrets:
 
 # ==============================================================================
 # Upstream MCP Servers (Full Sample Mode)
-# NPB公式戦データ(MariaDB)およびデジタル庁行政手続きMCPを含むフルスタック設定です。
+# NPB公式戦データ(MariaDB)、デジタル庁行政手続きMCP、および AWS Aurora/RDS IAM MCP を含むフルスタック設定です。
 # ==============================================================================
 upstreams:
   - id: "catalog"
@@ -96,3 +96,54 @@ upstreams:
         admin:
           allowed_tools:
             - "*"
+
+  - id: "aurora-rds"
+    path: "/mcp/aurora-rds"
+    target: "http://aurora-rds-mcp:33080/sse"
+    description: "AWS Aurora (MySQL) / RDS (MariaDB・MySQL) IAM-Authenticated MCP Server with ZTA Protection"
+    policies:
+      role_mappings:
+        guest:
+          allowed_tools: []
+        read_only:
+          allowed_tools:
+            - "list_tables"
+            - "describe_table"
+            - "execute_query"
+            - "check_connection_status"
+            - "read_query"
+            - "run_query"
+            - "get_table_schema"
+        analyst:
+          allowed_tools:
+            - "list_tables"
+            - "describe_table"
+            - "execute_query"
+            - "check_connection_status"
+            - "read_query"
+            - "run_query"
+            - "get_table_schema"
+        admin:
+          allowed_tools:
+            - "*"
+      firewall:
+        enforce_sql_check: true
+        restricted_roles:
+          - "analyst"
+          - "read_only"
+        allowed_statements:
+          - "SELECT"
+          - "SHOW"
+          - "DESC"
+          - "DESCRIBE"
+          - "EXPLAIN"
+        deny_statements:
+          - "INSERT"
+          - "UPDATE"
+          - "DELETE"
+          - "DROP"
+          - "ALTER"
+          - "TRUNCATE"
+          - "RENAME"
+          - "GRANT"
+          - "REVOKE"

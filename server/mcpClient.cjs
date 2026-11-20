@@ -359,10 +359,38 @@ async function ensureConnection(connState, user = null, req = null) {
 }
 
 /**
- * Classifies an MCP server into a logical domain and category using the dynamic MCP Harness YAML (`mcpHarnessService`).
+ * Classifies an MCP server into a logical domain and category using the dynamic MCP Harness YAML (`mcpHarnessService`),
+ * with built-in recognition for AWS Aurora (MySQL互換) / RDS (MariaDB・MySQL) IAM 認証サーバー.
  */
 function classifyServerDomain(conn) {
-    return mcpHarnessService.classifyServerByHarness(conn);
+    const harnessResult = mcpHarnessService.classifyServerByHarness(conn);
+    const domainKey = String(conn?.domain_key || '').toLowerCase();
+    const urlLower = String(conn?.endpoint_url || '').toLowerCase();
+    const nameLower = String(conn?.name || '').toLowerCase();
+
+    const isExplicitAuroraRds =
+        domainKey === 'aurora_rds' ||
+        urlLower.includes('/mcp/aurora-rds') ||
+        urlLower.includes('aurora-rds-mcp') ||
+        urlLower.includes('aurora_rds') ||
+        ((nameLower.includes('aurora') || /\brds\b/.test(nameLower)) && !nameLower.includes('npb') && !urlLower.includes('/mcp/mariadb'));
+
+    if (isExplicitAuroraRds && harnessResult.domain !== 'aurora_rds') {
+        return {
+            domain: 'aurora_rds',
+            icon: '🗄️',
+            category: 'AWS Aurora / RDS (IAM 認証)',
+            isBuiltInKnowledge: false,
+            isBuiltInGemma: false,
+            isAuroraRds: true,
+            routingInstruction: 'AWS Aurora (MySQL互換) / RDS (MariaDB・MySQL) IAM 認証データベースの照会では list_tables / describe_table / execute_query / check_connection_status 等を使用し、Read-Only 制約およびロール権限を厳守してください。'
+        };
+    }
+
+    return {
+        ...harnessResult,
+        isAuroraRds: harnessResult.domain === 'aurora_rds'
+    };
 }
 
 /**
@@ -797,6 +825,20 @@ async function getMcpMetadata(allowedWidgets = ['*'], user = null) {
     const userRoles = extractUserRoles(user);
     const serversMeta = [];
 
+    let auroraRdsMetaSummary = null;
+    try {
+        const rawAuroraCfg = await db.getSetting('MCP_AURORA_RDS_IAM_SECRET_CONFIG');
+        if (rawAuroraCfg) {
+            const parsed = JSON.parse(rawAuroraCfg);
+            auroraRdsMetaSummary = {
+                engine: parsed.engine || 'aurora-mysql',
+                auth_mode: parsed.auth_mode || 'iam',
+                aws_region: parsed.aws_region || 'ap-northeast-1',
+                read_only: parsed.read_only !== false
+            };
+        }
+    } catch (_) { /* ignore */ }
+
     for (const [id, conn] of serverConnections.entries()) {
         if (!hasServerAccess(id, allowedWidgets, user, hydratedPolicies)) {
             continue;
@@ -814,7 +856,8 @@ async function getMcpMetadata(allowedWidgets = ['*'], user = null) {
             }
         }
 
-        const { domain, icon, category } = classifyServerDomain(conn);
+        const domainInfo = classifyServerDomain(conn);
+        const { domain, icon, category, isAuroraRds } = domainInfo;
 
         const toolsMeta = (conn.tools || [])
             .filter(t => !(effectiveOpLevel === 'read_only' && isWriteToolName(t.name)))
@@ -828,11 +871,14 @@ async function getMcpMetadata(allowedWidgets = ['*'], user = null) {
         serversMeta.push({
             id: conn.id,
             name: conn.name,
+            endpoint_url: conn.endpoint_url || '',
             connection_mode: conn.connection_mode || 'zta_gateway',
             domain_key: conn.domain_key || domain,
             domain,
             icon,
             category,
+            is_aurora_rds: Boolean(isAuroraRds || domain === 'aurora_rds'),
+            aurora_rds_meta: (isAuroraRds || domain === 'aurora_rds') ? auroraRdsMetaSummary : null,
             operation_level: effectiveOpLevel,
             data_scope: grant.data_scope || 'all_company',
             restricted_identifiers: grant.restricted_identifiers || [],

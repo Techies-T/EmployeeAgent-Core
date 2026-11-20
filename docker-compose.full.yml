@@ -52,6 +52,7 @@ services:
     depends_on:
       - mariadb-mcp
       - admin-procedures-mcp
+      - aurora-rds-mcp
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -116,6 +117,45 @@ services:
     environment:
       - ADMIN_PROCEDURES_HOST=0.0.0.0
       - ADMIN_PROCEDURES_PORT=33070
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ============================================================================
+  # 5.5. AWS Aurora (MySQL互換) / RDS (MariaDB・MySQL) IAM 認証 MCP サーバー
+  #      デフォルト DB_AUTH_MODE=sandbox_sim でローカル test_mariadb へ安全接続 (AWS課金0円)
+  #      本番 EC2 環境では DB_AUTH_MODE=iam に切り替えて EC2 IAM ロール自動継承 + 15分トークン更新
+  # ============================================================================
+  aurora-rds-mcp:
+    build:
+      context: ./zta-mcp-stack/services/aurora-rds-mcp
+      dockerfile: Dockerfile
+    image: techies-t/aurora-rds-mcp:latest
+    container_name: aurora-rds-mcp
+    restart: unless-stopped
+    ports:
+      - "33080:33080"
+    environment:
+      - NODE_ENV=production
+      - MCP_PORT=33080
+      - MCP_HOST=0.0.0.0
+      - DB_AUTH_MODE=${DB_AUTH_MODE:-sandbox_sim}
+      - AURORA_RDS_ENGINE=${AURORA_RDS_ENGINE:-auto}
+      - DB_READ_ONLY=${DB_READ_ONLY:-true}
+      - AWS_REGION=${AWS_REGION:-ap-northeast-1}
+      - AURORA_RDS_HOST=${AURORA_RDS_HOST:-}
+      - AURORA_RDS_PORT=${AURORA_RDS_PORT:-3306}
+      - AURORA_RDS_USER=${AURORA_RDS_USER:-iam_readonly}
+      - AURORA_RDS_DATABASE=${AURORA_RDS_DATABASE:-testdb}
+      - AURORA_RDS_ROLE_ARN=${AURORA_RDS_ROLE_ARN:-}
+      - DB_SSL_CA_PATH=${DB_SSL_CA_PATH:-/etc/ssl/certs/rds-global-bundle.pem}
+      - DB_SSL_REJECT_UNAUTHORIZED=${DB_SSL_REJECT_UNAUTHORIZED:-true}
+      - SANDBOX_DB_HOST=${SANDBOX_DB_HOST:-test_mariadb}
+      - SANDBOX_DB_PORT=${SANDBOX_DB_PORT:-3306}
+      - SANDBOX_DB_USER=${SANDBOX_DB_USER:-testuser}
+      - SANDBOX_DB_PASSWORD=${SANDBOX_DB_PASSWORD:-testpassword}
+      - SANDBOX_DB_NAME=${SANDBOX_DB_NAME:-testdb}
+    depends_on:
+      - test_mariadb
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

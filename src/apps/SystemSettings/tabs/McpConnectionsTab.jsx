@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 
 const DOMAIN_KEY_OPTIONS = [
     { value: '', label: '🔍 自動判定 (mcp-harness.yaml のキーワード・URLルールに従う)' },
+    { value: 'aurora_rds', label: '🗄️ AWS Aurora / RDS (IAM 認証データベース) (aurora_rds)' },
     { value: 'npb_baseball', label: '⚾ プロ野球データ分析 (npb_baseball)' },
     { value: 'digital_agency', label: '🏛️ 行政手続・政府統計データ (digital_agency)' },
     { value: 'hr_personnel', label: '👥 人事・組織データベース (hr_personnel)' },
@@ -10,6 +11,34 @@ const DOMAIN_KEY_OPTIONS = [
     { value: 'catalog', label: '🗂️ メタデータ・データカタログ (catalog)' },
     { value: 'general', label: '🔌 汎用 MCP ツール (general)' }
 ];
+
+const AURORA_RDS_ZTA_SSE_ENDPOINT = 'http://zta-mcp-gateway:8080/mcp/aurora-rds/sse';
+const AURORA_RDS_ZTA_TOKEN_URL = 'http://zta-mcp-gateway:8080/oauth/token';
+
+const AURORA_RDS_ENGINE_OPTIONS = [
+    { value: 'aurora-mysql', label: 'Amazon Aurora (MySQL 互換) [aurora-mysql]' },
+    { value: 'rds-mariadb', label: 'Amazon RDS (MariaDB) [rds-mariadb]' },
+    { value: 'rds-mysql', label: 'Amazon RDS (MySQL) [rds-mysql]' }
+];
+
+const AURORA_RDS_AUTH_MODE_OPTIONS = [
+    { value: 'iam', label: 'iam [推奨・15分トークン + TLS 強制]' },
+    { value: 'awslabs_mysql', label: 'awslabs_mysql [AWS 公式 MCP (awslabs.mysql-mcp-server)]' },
+    { value: 'sandbox_sim', label: 'sandbox_sim [ローカルシミュレーション・AWS 課金 0 円]' }
+];
+
+const DEFAULT_AURORA_RDS_CONFIG = {
+    engine: 'aurora-mysql',
+    auth_mode: 'iam',
+    host: '',
+    port: 3306,
+    database: '',
+    iam_db_user: '',
+    aws_region: 'ap-northeast-1',
+    iam_role_arn: '',
+    read_only: true,
+    sse_endpoint: AURORA_RDS_ZTA_SSE_ENDPOINT
+};
 
 const MCP_GATEWAY_SIMULATION_SCENARIOS = [
     {
@@ -100,6 +129,14 @@ const McpConnectionsTab = ({
     const [isTesting, setIsTesting] = useState(false);
     const [testResult, setTestResult] = useState(null);
     const [testingServerId, setTestingServerId] = useState(null); // For inline list testing
+
+    // AWS Aurora / RDS IAM Auth Config State
+    const [isAuroraRdsPreset, setIsAuroraRdsPreset] = useState(false);
+    const [auroraRdsConfig, setAuroraRdsConfig] = useState(DEFAULT_AURORA_RDS_CONFIG);
+    const [isTestingAurora, setIsTestingAurora] = useState(false);
+    const [isSavingAurora, setIsSavingAurora] = useState(false);
+    const [auroraTestResult, setAuroraTestResult] = useState(null);
+    const [auroraSaveNotice, setAuroraSaveNotice] = useState(null);
 
     // Quick Prompts State
     const [newPromptLabel, setNewPromptLabel] = useState('');
@@ -219,10 +256,25 @@ const McpConnectionsTab = ({
         }
     };
 
+    const fetchAuroraRdsConfig = async () => {
+        try {
+            const res = await fetch('/api/mcp/aurora-rds/config');
+            if (res.ok) {
+                const data = await res.json();
+                if (data.config) {
+                    setAuroraRdsConfig({ ...DEFAULT_AURORA_RDS_CONFIG, ...data.config });
+                }
+            }
+        } catch (e) {
+            console.error('Failed to fetch Aurora/RDS IAM config:', e);
+        }
+    };
+
     useEffect(() => {
         fetchServers();
         fetchHarnessYaml();
         fetchMcpPdpPolicies();
+        fetchAuroraRdsConfig();
     }, []);
 
     const handleSaveHarnessYaml = async () => {
@@ -290,9 +342,107 @@ const McpConnectionsTab = ({
         }
     };
 
-    const handleOpenModal = (server = null) => {
+    const applyAuroraRdsZtaPreset = () => {
+        setIsAuroraRdsPreset(true);
+        setFormData(prev => ({
+            ...prev,
+            name: prev.name || 'AWS Aurora / RDS (IAM 認証)',
+            endpoint_url: AURORA_RDS_ZTA_SSE_ENDPOINT,
+            connection_mode: 'zta_gateway',
+            domain_key: 'aurora_rds',
+            token_url: prev.token_url || AURORA_RDS_ZTA_TOKEN_URL
+        }));
+        setAuroraRdsConfig(prev => ({
+            ...prev,
+            sse_endpoint: AURORA_RDS_ZTA_SSE_ENDPOINT
+        }));
+    };
+
+    const handleSaveAuroraRdsConfig = async () => {
+        setIsSavingAurora(true);
+        setAuroraSaveNotice(null);
+        try {
+            const res = await fetch('/api/mcp/aurora-rds/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ...auroraRdsConfig,
+                    sse_endpoint: formData.endpoint_url || auroraRdsConfig.sse_endpoint || AURORA_RDS_ZTA_SSE_ENDPOINT
+                })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                if (data.config) {
+                    setAuroraRdsConfig({ ...DEFAULT_AURORA_RDS_CONFIG, ...data.config });
+                }
+                setAuroraSaveNotice({
+                    type: 'success',
+                    text: data.message || '✅ Aurora / RDS IAM 接続設定を暗号化保存しました。'
+                });
+                return true;
+            }
+            setAuroraSaveNotice({
+                type: 'error',
+                text: data.error || 'Aurora / RDS IAM 設定の保存に失敗しました。'
+            });
+            return false;
+        } catch (e) {
+            setAuroraSaveNotice({
+                type: 'error',
+                text: `通信エラーが発生しました: ${e.message}`
+            });
+            return false;
+        } finally {
+            setIsSavingAurora(false);
+        }
+    };
+
+    const handleTestAuroraRds = async () => {
+        setIsTestingAurora(true);
+        setAuroraTestResult(null);
+        try {
+            const res = await fetch('/api/mcp/aurora-rds/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ...auroraRdsConfig,
+                    sse_endpoint: formData.endpoint_url || auroraRdsConfig.sse_endpoint || AURORA_RDS_ZTA_SSE_ENDPOINT
+                })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                setAuroraTestResult({
+                    success: true,
+                    message: data.message,
+                    detail: data.mcpHealthNote || '',
+                    sigv4Check: data.sigv4Check || null
+                });
+            } else {
+                setAuroraTestResult({
+                    success: false,
+                    message: data.error || 'Aurora / RDS IAM 疎通確認に失敗しました。'
+                });
+            }
+        } catch (e) {
+            setAuroraTestResult({
+                success: false,
+                message: `疎通確認中に通信エラーが発生しました: ${e.message}`
+            });
+        } finally {
+            setIsTestingAurora(false);
+        }
+    };
+
+    const handleOpenModal = (server = null, options = {}) => {
+        const { presetAuroraRds = false } = options;
+        setAuroraTestResult(null);
+        setAuroraSaveNotice(null);
         if (server) {
             setEditingServer(server);
+            const isAurora = server.domain_key === 'aurora_rds' ||
+                (server.endpoint_url || '').toLowerCase().includes('aurora-rds') ||
+                (server.name || '').toLowerCase().includes('aurora');
+            setIsAuroraRdsPreset(isAurora);
             setFormData({
                 id: server.id,
                 name: server.name,
@@ -303,8 +453,22 @@ const McpConnectionsTab = ({
                 client_id: server.client_id || '',
                 client_secret: '' // Do not populate secret for security, leave blank to not update
             });
+        } else if (presetAuroraRds) {
+            setEditingServer(null);
+            setIsAuroraRdsPreset(true);
+            setFormData({
+                id: null,
+                name: 'AWS Aurora / RDS (IAM 認証)',
+                endpoint_url: AURORA_RDS_ZTA_SSE_ENDPOINT,
+                connection_mode: 'zta_gateway',
+                domain_key: 'aurora_rds',
+                token_url: AURORA_RDS_ZTA_TOKEN_URL,
+                client_id: '',
+                client_secret: ''
+            });
         } else {
             setEditingServer(null);
+            setIsAuroraRdsPreset(false);
             setFormData({
                 id: null,
                 name: '',
@@ -323,7 +487,10 @@ const McpConnectionsTab = ({
     const handleCloseModal = () => {
         setIsModalOpen(false);
         setEditingServer(null);
+        setIsAuroraRdsPreset(false);
         setTestResult(null);
+        setAuroraTestResult(null);
+        setAuroraSaveNotice(null);
     };
 
     const handleTestConnection = async () => {
@@ -381,13 +548,25 @@ const McpConnectionsTab = ({
         }
 
         try {
+            if (isAuroraRdsPreset) {
+                const ok = await handleSaveAuroraRdsConfig();
+                if (!ok) return;
+            }
+
             const method = editingServer ? 'PUT' : 'POST';
             const url = editingServer ? `/api/mcp/servers/${editingServer.id}` : '/api/mcp/servers';
+            const payload = isAuroraRdsPreset
+                ? {
+                    ...formData,
+                    connection_mode: 'zta_gateway',
+                    domain_key: formData.domain_key || 'aurora_rds'
+                }
+                : formData;
             
             const res = await fetch(url, {
                 method,
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(formData)
+                body: JSON.stringify(payload)
             });
 
             if (res.ok) {
@@ -417,6 +596,8 @@ const McpConnectionsTab = ({
 
     const renderConnectionModeBadge = (server) => {
         const mode = server.connection_mode || 'zta_gateway';
+        const isAuroraRds = server.domain_key === 'aurora_rds' ||
+            (server.endpoint_url || '').toLowerCase().includes('aurora-rds');
         if (mode === 'direct_public') {
             return (
                 <span className="text-[10px] px-2.5 py-0.5 rounded-full font-semibold bg-sky-100 text-sky-800 border border-sky-200 flex items-center gap-1">
@@ -434,10 +615,18 @@ const McpConnectionsTab = ({
             );
         }
         return (
-            <span className="text-[10px] px-2.5 py-0.5 rounded-full font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 flex items-center gap-1">
-                <span>🛡️</span>
-                <span>ZTA Gateway (OAuth A2A 認証経由)</span>
-            </span>
+            <>
+                <span className="text-[10px] px-2.5 py-0.5 rounded-full font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 flex items-center gap-1">
+                    <span>🛡️</span>
+                    <span>ZTA Gateway (OAuth A2A 認証経由)</span>
+                </span>
+                {isAuroraRds && (
+                    <span className="text-[10px] px-2.5 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1">
+                        <span>🗄️</span>
+                        <span>AWS Aurora / RDS — IAM 認証</span>
+                    </span>
+                )}
+            </>
         );
     };
 
@@ -900,19 +1089,30 @@ const McpConnectionsTab = ({
 
             {activeSubTab === 'connections' && (
             <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 animate-fadeIn">
-                <div className="flex justify-between items-center mb-4">
+                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-4">
                     <div>
                         <h2 className="font-semibold text-gray-900">MCP Server Connections & Routing Mode</h2>
                         <p className="text-xs text-gray-500">
-                            機密データ用の「🛡️ ZTA Gateway (OAuth A2A認証)」と、公開統計・オープンデータ用の「🌐 Direct Public (Gatewayバイパス直接接続)」をサーバー単位で選択できます。
+                            機密データ用の「🛡️ ZTA Gateway (OAuth A2A認証)」、AWS Aurora/RDS 向けの「🗄️ IAM 認証」、公開統計用の「🌐 Direct Public (Gatewayバイパス直接接続)」をサーバー単位で選択できます。
                         </p>
                     </div>
-                    <button
-                        onClick={() => handleOpenModal()}
-                        className="px-4 py-2 bg-indigo-500 text-white rounded text-xs font-medium hover:bg-indigo-600 transition-colors flex items-center gap-2"
-                    >
-                        <span>+ Add Server</span>
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <button
+                            type="button"
+                            onClick={() => handleOpenModal(null, { presetAuroraRds: true })}
+                            className="px-3.5 py-2 bg-amber-50 border border-amber-300 text-amber-900 rounded text-xs font-semibold hover:bg-amber-100 transition-colors flex items-center gap-1.5"
+                        >
+                            <span>🗄️</span>
+                            <span>+ Aurora / RDS (IAM 認証)</span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleOpenModal()}
+                            className="px-4 py-2 bg-indigo-500 text-white rounded text-xs font-medium hover:bg-indigo-600 transition-colors flex items-center gap-2"
+                        >
+                            <span>+ Add Server</span>
+                        </button>
+                    </div>
                 </div>
                 
                 {isLoading ? (
@@ -1231,11 +1431,20 @@ const McpConnectionsTab = ({
             {/* Modal */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 animate-fadeIn p-4">
-                    <div className="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden max-h-[90vh] flex flex-col">
-                        <div className="px-6 py-4 border-b border-gray-100">
+                    <div className={`bg-white rounded-xl shadow-xl w-full ${isAuroraRdsPreset ? 'max-w-2xl' : 'max-w-lg'} overflow-hidden max-h-[90vh] flex flex-col transition-all`}>
+                        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-2">
                             <h3 className="font-semibold text-lg text-gray-900">
                                 {editingServer ? 'Edit MCP Server Connection' : 'Add MCP Server Connection'}
                             </h3>
+                            <button
+                                type="button"
+                                onClick={applyAuroraRdsZtaPreset}
+                                className="px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-bold transition-colors flex items-center gap-1"
+                                title="ZTA Gateway 経由の Aurora/RDS IAM 認証プリセットと SSE URL を自動入力"
+                            >
+                                <span>⚡</span>
+                                <span>Aurora / RDS (IAM) プリセット自動入力</span>
+                            </button>
                         </div>
                         <div className="p-6 space-y-4 overflow-y-auto">
                             <div>
@@ -1244,32 +1453,44 @@ const McpConnectionsTab = ({
                                     type="text"
                                     value={formData.name}
                                     onChange={(e) => setFormData({...formData, name: e.target.value})}
-                                    placeholder="e.g. NPB公式記録オープンデータ / 人事労務MCPサーバー"
+                                    placeholder="e.g. AWS Aurora / RDS (IAM 認証) / NPB公式記録オープンデータ"
                                     className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                 />
                             </div>
                             <div>
-                                <label className="block text-xs font-medium text-gray-700 mb-1">SSE Endpoint URL *</label>
+                                <div className="flex items-center justify-between mb-1">
+                                    <label className="block text-xs font-medium text-gray-700">SSE Endpoint URL *</label>
+                                    <button
+                                        type="button"
+                                        onClick={applyAuroraRdsZtaPreset}
+                                        className="text-[11px] font-semibold text-amber-800 hover:text-amber-950 underline cursor-pointer"
+                                    >
+                                        ⚡ ZTA Gateway SSE を自動入力 ({AURORA_RDS_ZTA_SSE_ENDPOINT})
+                                    </button>
+                                </div>
                                 <input
                                     type="text"
                                     value={formData.endpoint_url}
                                     onChange={(e) => setFormData({...formData, endpoint_url: e.target.value})}
-                                    placeholder="http://localhost:8085/sse"
+                                    placeholder="http://zta-mcp-gateway:8080/mcp/aurora-rds/sse"
                                     className="w-full px-3 py-2 bg-white text-gray-900 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                 />
                             </div>
 
-                            {/* Phase 3: Connection Routing Mode Selector */}
+                            {/* Phase 3: Connection Routing Mode / Preset Selector */}
                             <div>
                                 <label className="block text-xs font-semibold text-gray-700 mb-1.5">
-                                    通信・認証ルーティング方式 (Connection Mode) *
+                                    通信・認証ルーティング方式 / 接続種別 (Connection Mode) *
                                 </label>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                                     <button
                                         type="button"
-                                        onClick={() => setFormData({...formData, connection_mode: 'zta_gateway'})}
+                                        onClick={() => {
+                                            setIsAuroraRdsPreset(false);
+                                            setFormData({...formData, connection_mode: 'zta_gateway'});
+                                        }}
                                         className={`p-3 rounded-lg border text-left transition-all ${
-                                            formData.connection_mode === 'zta_gateway'
+                                            !isAuroraRdsPreset && formData.connection_mode === 'zta_gateway'
                                                 ? 'bg-indigo-50 border-indigo-500 ring-2 ring-indigo-500/20'
                                                 : 'bg-white border-gray-200 hover:bg-gray-50'
                                         }`}
@@ -1284,9 +1505,29 @@ const McpConnectionsTab = ({
                                     </button>
                                     <button
                                         type="button"
-                                        onClick={() => setFormData({...formData, connection_mode: 'direct_public'})}
+                                        onClick={applyAuroraRdsZtaPreset}
                                         className={`p-3 rounded-lg border text-left transition-all ${
-                                            formData.connection_mode === 'direct_public'
+                                            isAuroraRdsPreset
+                                                ? 'bg-amber-50 border-amber-500 ring-2 ring-amber-500/20'
+                                                : 'bg-white border-gray-200 hover:bg-gray-50'
+                                        }`}
+                                    >
+                                        <div className="flex items-center gap-1.5 font-bold text-xs text-amber-950">
+                                            <span>🗄️</span>
+                                            <span>AWS Aurora (MySQL互換) / RDS (MariaDB・MySQL) — IAM 認証</span>
+                                        </div>
+                                        <p className="text-[11px] text-gray-600 mt-1 leading-snug">
+                                            SigV4 15分トークン + TLS 強制 + ZTA Gateway SSE 経由で Aurora / RDS へパスワードレス接続します。
+                                        </p>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setIsAuroraRdsPreset(false);
+                                            setFormData({...formData, connection_mode: 'direct_public'});
+                                        }}
+                                        className={`p-3 rounded-lg border text-left transition-all ${
+                                            !isAuroraRdsPreset && formData.connection_mode === 'direct_public'
                                                 ? 'bg-sky-50 border-sky-500 ring-2 ring-sky-500/20'
                                                 : 'bg-white border-gray-200 hover:bg-gray-50'
                                         }`}
@@ -1301,6 +1542,202 @@ const McpConnectionsTab = ({
                                     </button>
                                 </div>
                             </div>
+
+                            {/* AWS Aurora / RDS IAM Authentication Config Panel */}
+                            {isAuroraRdsPreset && (
+                                <div className="p-4 rounded-xl bg-amber-50/60 border border-amber-200 space-y-3.5 animate-fadeIn">
+                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-amber-200/80">
+                                        <div>
+                                            <div className="flex items-center gap-1.5 font-bold text-xs text-amber-950">
+                                                <span>🗄️</span>
+                                                <span>AWS Aurora (MySQL互換) / RDS (MariaDB・MySQL) — IAM 認証設定</span>
+                                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold">
+                                                    🔒 DB 暗号化保存
+                                                </span>
+                                            </div>
+                                            <p className="text-[11px] text-amber-900/80 mt-0.5">
+                                                静的 DB パスワードを持たず、15分有効の SigV4 IAM トークン（12分サイレントリフレッシュ）+ TLS で安全に接続します。
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                                                エンジン種別 *
+                                            </label>
+                                            <select
+                                                value={auroraRdsConfig.engine}
+                                                onChange={(e) => setAuroraRdsConfig({ ...auroraRdsConfig, engine: e.target.value })}
+                                                className="w-full px-2.5 py-1.5 bg-white text-gray-900 border border-amber-300 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                            >
+                                                {AURORA_RDS_ENGINE_OPTIONS.map(opt => (
+                                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                                                接続方式 (DB_AUTH_MODE) *
+                                            </label>
+                                            <select
+                                                value={auroraRdsConfig.auth_mode}
+                                                onChange={(e) => setAuroraRdsConfig({ ...auroraRdsConfig, auth_mode: e.target.value })}
+                                                className="w-full px-2.5 py-1.5 bg-white text-gray-900 border border-amber-300 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                            >
+                                                {AURORA_RDS_AUTH_MODE_OPTIONS.map(opt => (
+                                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        <div className="sm:col-span-2">
+                                            <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                                                エンドポイント（クラスタまたはインスタンス）
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={auroraRdsConfig.host}
+                                                onChange={(e) => setAuroraRdsConfig({ ...auroraRdsConfig, host: e.target.value })}
+                                                placeholder="my-aurora-cluster.cluster-xxxx.ap-northeast-1.rds.amazonaws.com"
+                                                className="w-full px-2.5 py-1.5 bg-white text-gray-900 border border-amber-300 rounded-md text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                                                ポート (デフォルト: 3306)
+                                            </label>
+                                            <input
+                                                type="number"
+                                                min="1"
+                                                max="65535"
+                                                value={auroraRdsConfig.port}
+                                                onChange={(e) => setAuroraRdsConfig({ ...auroraRdsConfig, port: parseInt(e.target.value, 10) || 3306 })}
+                                                className="w-full px-2.5 py-1.5 bg-white text-gray-900 border border-amber-300 rounded-md text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                                                DB 名
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={auroraRdsConfig.database}
+                                                onChange={(e) => setAuroraRdsConfig({ ...auroraRdsConfig, database: e.target.value })}
+                                                placeholder="app_db"
+                                                className="w-full px-2.5 py-1.5 bg-white text-gray-900 border border-amber-300 rounded-md text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                                                IAM DB ユーザー名
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={auroraRdsConfig.iam_db_user}
+                                                onChange={(e) => setAuroraRdsConfig({ ...auroraRdsConfig, iam_db_user: e.target.value })}
+                                                placeholder="ea_iam_readonly"
+                                                className="w-full px-2.5 py-1.5 bg-white text-gray-900 border border-amber-300 rounded-md text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                                                AWS リージョン (デフォルト: ap-northeast-1)
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={auroraRdsConfig.aws_region}
+                                                onChange={(e) => setAuroraRdsConfig({ ...auroraRdsConfig, aws_region: e.target.value })}
+                                                placeholder="ap-northeast-1"
+                                                className="w-full px-2.5 py-1.5 bg-white text-gray-900 border border-amber-300 rounded-md text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                            />
+                                        </div>
+
+                                        <div className="sm:col-span-2">
+                                            <label className="block text-[11px] font-semibold text-gray-700 mb-1">
+                                                IAM ロール ARN（任意：未入力時は EC2 IAM ロールを自動継承）
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={auroraRdsConfig.iam_role_arn}
+                                                onChange={(e) => setAuroraRdsConfig({ ...auroraRdsConfig, iam_role_arn: e.target.value })}
+                                                placeholder="arn:aws:iam::123456789012:role/EmployeeAgent-RDS-IAM (未入力時は EC2 IAM ロール自動継承)"
+                                                className="w-full px-2.5 py-1.5 bg-white text-gray-900 border border-amber-300 rounded-md text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500"
+                                            />
+                                        </div>
+
+                                        <div className="sm:col-span-2 flex items-center justify-between p-2.5 rounded-lg bg-white border border-amber-200">
+                                            <div>
+                                                <div className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                                                    <span>🔒</span>
+                                                    <span>Read-Only モード（デフォルト ON 推奨）</span>
+                                                </div>
+                                                <p className="text-[11px] text-gray-500">
+                                                    有効時は SELECT / SHOW / DESCRIBE / EXPLAIN のみ許可し、INSERT / UPDATE / DELETE / DROP 等を厳格に遮断します。
+                                                </p>
+                                            </div>
+                                            <label className="inline-flex items-center cursor-pointer shrink-0 ml-3">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={Boolean(auroraRdsConfig.read_only)}
+                                                    onChange={(e) => setAuroraRdsConfig({ ...auroraRdsConfig, read_only: e.target.checked })}
+                                                    className="sr-only peer"
+                                                />
+                                                <div className="w-10 h-5 bg-gray-300 peer-focus:outline-none rounded-full peer peer-checked:bg-emerald-600 relative after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5" />
+                                                <span className={`ml-2 text-xs font-bold ${auroraRdsConfig.read_only ? 'text-emerald-700' : 'text-rose-600'}`}>
+                                                    {auroraRdsConfig.read_only ? 'ON' : 'OFF'}
+                                                </span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={handleTestAuroraRds}
+                                                disabled={isTestingAurora}
+                                                className="px-3 py-1.5 bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-md text-xs font-semibold transition-colors disabled:opacity-50"
+                                            >
+                                                {isTestingAurora ? '検証中...' : '🔍 IAM 疎通・トークン検証'}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={handleSaveAuroraRdsConfig}
+                                                disabled={isSavingAurora}
+                                                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-md text-xs font-semibold transition-colors disabled:opacity-50"
+                                            >
+                                                {isSavingAurora ? '保存中...' : '💾 IAM 設定を暗号化保存'}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {auroraSaveNotice && (
+                                        <div className={`p-2.5 rounded-lg text-xs font-medium border ${auroraSaveNotice.type === 'success' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                                            {auroraSaveNotice.text}
+                                        </div>
+                                    )}
+
+                                    {auroraTestResult && (
+                                        <div className={`p-2.5 rounded-lg text-xs border space-y-1 ${auroraTestResult.success ? 'bg-emerald-50 text-emerald-900 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'}`}>
+                                            <div className="font-semibold">{auroraTestResult.message}</div>
+                                            {auroraTestResult.detail && (
+                                                <div className="text-[11px] opacity-90">{auroraTestResult.detail}</div>
+                                            )}
+                                            {auroraTestResult.sigv4Check && (
+                                                <div className="text-[10px] font-mono bg-white/70 rounded px-2 py-1 border border-emerald-200/80 break-all">
+                                                    SigV4: {auroraTestResult.sigv4Check.algorithm} | TTL: {auroraTestResult.sigv4Check.expiresInSeconds}s (Refresh: {auroraTestResult.sigv4Check.refreshIntervalSeconds}s) | 認証元: {auroraTestResult.sigv4Check.credentialSource}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
 
                             {/* Domain Key Mapping */}
                             <div>

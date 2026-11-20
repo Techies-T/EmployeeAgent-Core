@@ -16,6 +16,7 @@ import { CatalogProvider } from "./catalog/index.js";
 import { inspectSqlQuery } from "./pep/sqlInspector.js";
 import { checkPolicyConsistency } from "./audit/consistencyEngine.js";
 import { createAuditApiRouter } from "./audit/api.js";
+import { listUpstreamTools, callUpstreamTool } from "./proxy/upstreamClient.js";
 import crypto from "node:crypto";
 import { AuthContext, GatewayConfig, McpRequest, ToolDefinition } from "./types/index.js";
 
@@ -121,11 +122,27 @@ app.post("/oauth/token", (req: Request, res: Response) => {
     process.env.GATEWAY_JWT_SECRET ||
     "zta-dev-default-secret-change-in-production";
 
+  const requestedScopeRaw = req.body.scope || req.query.scope;
+  const requestedScopes =
+    typeof requestedScopeRaw === "string"
+      ? requestedScopeRaw.split(/\s+/).map((s) => s.trim()).filter(Boolean)
+      : [];
+
+  // Only permit read_only narrowing or scopes already covered by client roles (prevent privilege escalation)
+  const effectiveScopes = requestedScopes.filter(
+    (s) => s === "read_only" || matchedClient.roles.includes(s)
+  );
+
+  const tokenPayload: Record<string, any> = {
+    sub: matchedClient.client_id,
+    roles: matchedClient.roles,
+  };
+  if (effectiveScopes.length > 0) {
+    tokenPayload.scope = effectiveScopes.join(" ");
+  }
+
   const token = jwt.sign(
-    {
-      sub: matchedClient.client_id,
-      roles: matchedClient.roles,
-    },
+    tokenPayload,
     secretKey,
     {
       issuer: config.auth?.issuer || "https://auth.techies.tokyo",
@@ -151,6 +168,24 @@ app.post("/oauth/token", (req: Request, res: Response) => {
 
 // State for active SSE transports
 const sseTransports = new Map<string, SSEServerTransport>();
+
+// Helper to combine JWT roles and scopes for RBAC / SQL Firewall enforcement
+function getEffectiveRoles(authContext: AuthContext): string[] {
+  const combined = new Set<string>(authContext.roles || []);
+  if (Array.isArray(authContext.scopes)) {
+    for (const s of authContext.scopes) {
+      if (s) combined.add(s);
+    }
+  }
+  return Array.from(combined);
+}
+
+// Helper to extract SQL query string from tool arguments across MariaDB / Aurora-RDS / awslabs MCP tools
+function extractSqlQueryArg(args?: Record<string, any>): string | undefined {
+  if (!args || typeof args !== "object") return undefined;
+  const candidate = args.query ?? args.sql ?? args.sql_query ?? args.statement;
+  return typeof candidate === "string" ? candidate : undefined;
+}
 
 // Helper to authenticate request via Bearer header or access_token query param
 function authenticate(req: Request): AuthContext | null {
@@ -192,7 +227,9 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
     return;
   }
 
-  console.log(`[ZTA Gateway SSE] Client ${authContext.clientId} (roles: [${authContext.roles.join(", ")}]) connected to ${upstream.id}`);
+  const effectiveRoles = getEffectiveRoles(authContext);
+
+  console.log(`[ZTA Gateway SSE] Client ${authContext.clientId} (roles: [${effectiveRoles.join(", ")}]) connected to ${upstream.id}`);
 
   const messagePostEndpoint = `/mcp/${upstreamId}/message`;
   const transport = new SSEServerTransport(messagePostEndpoint, res);
@@ -222,21 +259,15 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
       if (upstream.id === "catalog" || upstream.target.startsWith("internal://catalog")) {
         rawTools = catalogProvider.getToolDefinitions();
       } else {
-        const upstreamRes = await fetch(upstream.target, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
-        });
-        const data = (await upstreamRes.json()) as any;
-        rawTools = (data.result?.tools || []) as ToolDefinition[];
+        rawTools = await listUpstreamTools(upstream);
       }
 
-      const maskedTools = maskTools(rawTools, authContext.roles, upstream);
+      const maskedTools = maskTools(rawTools, effectiveRoles, upstream);
 
       defaultAuditLogger.log({
         event_type: "ACCESS_ALLOWED",
         client_id: authContext.clientId,
-        roles: authContext.roles,
+        roles: effectiveRoles,
         upstream_id: upstream.id,
         method: "tools/list",
         decision: "ALLOW",
@@ -258,7 +289,7 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
     const ztaUserCtx = _zta_context && typeof _zta_context === "object" ? _zta_context : {};
     const buildClientSubject = (ip: string) => ({
       client_id: authContext.clientId,
-      roles: authContext.roles,
+      roles: effectiveRoles,
       ip_address: ip,
       user_agent: req.headers["user-agent"],
       user_id: ztaUserCtx.user_id ?? null,
@@ -268,11 +299,11 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
     });
 
     // Check Tool Permission (RBAC)
-    if (!isToolCallAllowed(name, authContext.roles, upstream)) {
+    if (!isToolCallAllowed(name, effectiveRoles, upstream)) {
       defaultAuditLogger.log({
         event_type: "ACCESS_BLOCKED",
         client_id: authContext.clientId,
-        roles: authContext.roles,
+        roles: effectiveRoles,
         upstream_id: upstream.id,
         method: "tools/call",
         tool_name: name,
@@ -288,14 +319,14 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
       let contentResult: any;
 
       if (name === "list_catalog") {
-        const catalogList = catalogProvider.listCatalog(authContext.roles);
+        const catalogList = catalogProvider.listCatalog(effectiveRoles);
         contentResult = { content: [{ type: "text", text: JSON.stringify(catalogList, null, 2) }] };
       } else if (name === "get_catalog_detail") {
         const serviceId = String(args?.service_id || "");
         if (!serviceId) {
           throw new Error("Missing required argument: 'service_id'");
         }
-        const detail = catalogProvider.getCatalogDetail(serviceId, authContext.roles);
+        const detail = catalogProvider.getCatalogDetail(serviceId, effectiveRoles);
         contentResult = { content: [{ type: "text", text: JSON.stringify(detail, null, 2) }] };
       } else {
         throw new Error(`Unknown catalog tool '${name}'`);
@@ -304,7 +335,7 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
       defaultAuditLogger.log({
         event_type: "TOOL_EXECUTION",
         client_id: authContext.clientId,
-        roles: authContext.roles,
+        roles: effectiveRoles,
         upstream_id: upstream.id,
         method: "tools/call",
         tool_name: name,
@@ -323,7 +354,7 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
       "127.0.0.1";
 
     // 1. Deep SQL Inspection if arguments contain SQL query
-    const queryArg = args?.query || args?.sql;
+    const queryArg = extractSqlQueryArg(args);
     const sqlInspection = typeof queryArg === "string" ? inspectSqlQuery(queryArg) : undefined;
 
     if (typeof queryArg === "string") {
@@ -341,7 +372,7 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
     const consistency = checkPolicyConsistency({
       upstreamId: upstream.id,
       toolName: name,
-      clientRoles: authContext.roles,
+      clientRoles: effectiveRoles,
       sqlInspection,
       catalogProvider,
     });
@@ -355,7 +386,7 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
 
     // 3. Query Firewall: check SQL argument
     if (typeof queryArg === "string" && upstream.policies.firewall?.enforce_sql_check) {
-      const firewallDecision = validateSqlQuery(queryArg, upstream.policies.firewall, authContext.roles);
+      const firewallDecision = validateSqlQuery(queryArg, upstream.policies.firewall, effectiveRoles);
 
       if (!firewallDecision.allowed) {
         console.warn(`[ZTA PEP Firewall] 🚨 Blocked query: ${firewallDecision.reason}`);
@@ -384,22 +415,11 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
       }
     }
 
-    // 4. Forward to upstream target
-    let upstreamRes: any;
-    let data: any;
+    // 4. Forward to upstream target (supports both SSE and HTTP JSON-RPC upstreams)
+    let toolResult: any;
     try {
-      upstreamRes = await fetch(upstream.target, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          method: "tools/call",
-          params: { name, arguments: args },
-          id: Date.now(),
-        }),
-      });
-      data = (await upstreamRes.json()) as any;
-    } catch (netErr: any) {
+      toolResult = await callUpstreamTool(upstream, name, args);
+    } catch (upstreamErr: any) {
       await defaultAuditLogger.logTransaction({
         transaction_id: transactionId,
         timestamp: new Date().toISOString(),
@@ -416,33 +436,10 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
           policy_enforcement: "ALLOW",
           execution_time_ms: Date.now() - startTime,
           upstream_status_code: 502,
-          error_message: netErr.message,
+          error_message: upstreamErr.message,
         },
       });
-      throw netErr;
-    }
-
-    if (data.error) {
-      await defaultAuditLogger.logTransaction({
-        transaction_id: transactionId,
-        timestamp: new Date().toISOString(),
-        event_type: "TOOL_EXECUTION_ERROR",
-        client: buildClientSubject(clientIp),
-        upstream: {
-          upstream_id: upstream.id,
-          target_endpoint: upstream.target,
-          tool_name: name,
-        },
-        sql_inspection: sqlInspection,
-        consistency,
-        decision: {
-          policy_enforcement: "ALLOW",
-          execution_time_ms: Date.now() - startTime,
-          upstream_status_code: 500,
-          error_message: data.error.message,
-        },
-      });
-      throw new Error(data.error.message || "Upstream execution error");
+      throw upstreamErr;
     }
 
     // 5. Successful tool execution audit log
@@ -472,7 +469,7 @@ app.get("/mcp/:upstreamId/sse", async (req: Request, res: Response) => {
       },
     });
 
-    return data.result || { content: [] };
+    return toolResult || { content: [] };
   });
 
   await mcpServer.connect(transport);
@@ -514,6 +511,7 @@ app.post("/mcp/*", async (req: Request, res: Response) => {
     return;
   }
 
+  const effectiveRoles = getEffectiveRoles(authContext);
   const mcpReq = req.body as McpRequest;
 
   if (mcpReq.method === "tools/list") {
@@ -522,15 +520,9 @@ app.post("/mcp/*", async (req: Request, res: Response) => {
       if (upstream.id === "catalog" || upstream.target.startsWith("internal://catalog")) {
         rawTools = catalogProvider.getToolDefinitions();
       } else {
-        const response = await fetch(upstream.target, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(mcpReq),
-        });
-        const data = (await response.json()) as any;
-        rawTools = (data.result?.tools || []) as ToolDefinition[];
+        rawTools = await listUpstreamTools(upstream);
       }
-      const maskedTools = maskTools(rawTools, authContext.roles, upstream);
+      const maskedTools = maskTools(rawTools, effectiveRoles, upstream);
       res.status(200).json({
         jsonrpc: "2.0",
         id: mcpReq.id,
@@ -545,7 +537,7 @@ app.post("/mcp/*", async (req: Request, res: Response) => {
 
   if (mcpReq.method === "tools/call" && mcpReq.params?.name) {
     const toolName = mcpReq.params.name;
-    if (!isToolCallAllowed(toolName, authContext.roles, upstream)) {
+    if (!isToolCallAllowed(toolName, effectiveRoles, upstream)) {
       res.status(403).json({
         jsonrpc: "2.0",
         id: mcpReq.id,
@@ -554,12 +546,12 @@ app.post("/mcp/*", async (req: Request, res: Response) => {
       return;
     }
 
-    const args = mcpReq.params.arguments;
+    const args = mcpReq.params.arguments || {};
 
     if (upstream.id === "catalog" || upstream.target.startsWith("internal://catalog")) {
       try {
         if (toolName === "list_catalog") {
-          const catalogList = catalogProvider.listCatalog(authContext.roles);
+          const catalogList = catalogProvider.listCatalog(effectiveRoles);
           res.status(200).json({
             jsonrpc: "2.0",
             id: mcpReq.id,
@@ -568,7 +560,7 @@ app.post("/mcp/*", async (req: Request, res: Response) => {
           return;
         } else if (toolName === "get_catalog_detail") {
           const serviceId = String(args?.service_id || "");
-          const detail = catalogProvider.getCatalogDetail(serviceId, authContext.roles);
+          const detail = catalogProvider.getCatalogDetail(serviceId, effectiveRoles);
           res.status(200).json({
             jsonrpc: "2.0",
             id: mcpReq.id,
@@ -586,9 +578,9 @@ app.post("/mcp/*", async (req: Request, res: Response) => {
       }
     }
 
-    const queryArg = args?.query || args?.sql;
+    const queryArg = extractSqlQueryArg(args);
     if (typeof queryArg === "string" && upstream.policies.firewall?.enforce_sql_check) {
-      const firewallDecision = validateSqlQuery(queryArg, upstream.policies.firewall, authContext.roles);
+      const firewallDecision = validateSqlQuery(queryArg, upstream.policies.firewall, effectiveRoles);
       if (!firewallDecision.allowed) {
         res.status(403).json({
           jsonrpc: "2.0",
@@ -597,6 +589,23 @@ app.post("/mcp/*", async (req: Request, res: Response) => {
         });
         return;
       }
+    }
+
+    try {
+      const result = await callUpstreamTool(upstream, toolName, args);
+      res.status(200).json({
+        jsonrpc: "2.0",
+        id: mcpReq.id,
+        result,
+      });
+      return;
+    } catch (err: any) {
+      res.status(502).json({
+        jsonrpc: "2.0",
+        id: mcpReq.id,
+        error: { code: -32603, message: err.message },
+      });
+      return;
     }
   }
 

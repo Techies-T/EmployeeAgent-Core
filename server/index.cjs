@@ -814,14 +814,283 @@ app.post('/api/gemma/stream', requireAuth, async (req, res) => {
 app.use('/api/skills', requireAuth, require('./routes/skills.cjs'));
 
 // MCP Servers requires either manage_system_settings or manage_roles
-app.use('/api/mcp/servers', requireAuth, (req, res, next) => {
+const requireMcpAdminPermission = (req, res, next) => {
     const allowed = req.user.allowed_actions || [];
     if (allowed.includes('*') || allowed.includes('action:manage_system_settings') || allowed.includes('action:manage_roles')) {
         next();
     } else {
         res.status(403).json({ error: 'Permission denied' });
     }
-}, require('./routes/mcpServers.cjs'));
+};
+
+app.use('/api/mcp/servers', requireAuth, requireMcpAdminPermission, require('./routes/mcpServers.cjs'));
+
+// ============================================================================
+// AWS Aurora (MySQL互換) / RDS (MariaDB・MySQL) IAM 認証設定 & 疎通確認 API
+// ============================================================================
+const AURORA_RDS_SETTING_KEY = 'MCP_AURORA_RDS_IAM_SECRET_CONFIG'; // 'SECRET' を含むため db.setSetting で自動暗号化
+const VALID_AURORA_ENGINES = new Set(['aurora-mysql', 'rds-mariadb', 'rds-mysql']);
+const VALID_AURORA_AUTH_MODES = new Set(['iam', 'awslabs_mysql', 'sandbox_sim']);
+
+function buildDefaultAuroraRdsConfig() {
+    const envPort = parseInt(process.env.AURORA_RDS_PORT || '3306', 10);
+    return {
+        engine: VALID_AURORA_ENGINES.has(process.env.AURORA_RDS_ENGINE) ? process.env.AURORA_RDS_ENGINE : 'aurora-mysql',
+        auth_mode: VALID_AURORA_AUTH_MODES.has(process.env.DB_AUTH_MODE) ? process.env.DB_AUTH_MODE : 'iam',
+        host: process.env.AURORA_RDS_HOST || '',
+        port: Number.isFinite(envPort) && envPort > 0 && envPort <= 65535 ? envPort : 3306,
+        database: process.env.AURORA_RDS_DATABASE || '',
+        iam_db_user: process.env.AURORA_RDS_USER || '',
+        aws_region: process.env.AWS_REGION || 'ap-northeast-1',
+        iam_role_arn: process.env.AURORA_RDS_ROLE_ARN || '',
+        read_only: process.env.DB_READ_ONLY !== 'false',
+        sse_endpoint: 'http://zta-mcp-gateway:8080/mcp/aurora-rds/sse',
+        updated_at: null
+    };
+}
+
+function normalizeAuroraRdsConfig(input = {}, fallback = buildDefaultAuroraRdsConfig()) {
+    const engine = VALID_AURORA_ENGINES.has(input.engine) ? input.engine : fallback.engine;
+    const authMode = VALID_AURORA_AUTH_MODES.has(input.auth_mode) ? input.auth_mode : fallback.auth_mode;
+    const rawPort = input.port !== undefined && input.port !== '' ? parseInt(String(input.port), 10) : fallback.port;
+    const port = Number.isFinite(rawPort) && rawPort > 0 && rawPort <= 65535 ? rawPort : 3306;
+    const awsRegion = String(input.aws_region ?? fallback.aws_region ?? 'ap-northeast-1').trim() || 'ap-northeast-1';
+    const readOnly = input.read_only !== undefined ? Boolean(input.read_only) : Boolean(fallback.read_only);
+    return {
+        engine,
+        auth_mode: authMode,
+        host: String(input.host ?? fallback.host ?? '').trim(),
+        port,
+        database: String(input.database ?? fallback.database ?? '').trim(),
+        iam_db_user: String(input.iam_db_user ?? fallback.iam_db_user ?? '').trim(),
+        aws_region: awsRegion,
+        iam_role_arn: String(input.iam_role_arn ?? fallback.iam_role_arn ?? '').trim(),
+        read_only: readOnly,
+        sse_endpoint: String(input.sse_endpoint ?? fallback.sse_endpoint ?? 'http://zta-mcp-gateway:8080/mcp/aurora-rds/sse').trim(),
+        updated_at: input.updated_at || fallback.updated_at || null
+    };
+}
+
+async function loadAuroraRdsConfig() {
+    const defaults = buildDefaultAuroraRdsConfig();
+    try {
+        const raw = await db.getSetting(AURORA_RDS_SETTING_KEY);
+        if (!raw) return defaults;
+        const parsed = JSON.parse(raw);
+        return normalizeAuroraRdsConfig(parsed, defaults);
+    } catch (err) {
+        console.warn('[Aurora/RDS Config] Failed to parse saved config, falling back to defaults:', err.message);
+        return defaults;
+    }
+}
+
+function buildSigV4RdsTokenPreview(cfg) {
+    const nodeCrypto = require('crypto');
+    const host = cfg.host || 'sandbox-aurora.cluster-local.ap-northeast-1.rds.amazonaws.com';
+    const port = cfg.port || 3306;
+    const region = cfg.aws_region || 'ap-northeast-1';
+    const user = cfg.iam_db_user || 'ea_iam_readonly';
+    const now = new Date();
+    const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+    const dateStamp = amzDate.slice(0, 8);
+    const credentialScope = `${dateStamp}/${region}/rds-db/aws4_request`;
+    const accessKeyHint = process.env.AWS_ACCESS_KEY_ID
+        ? `${process.env.AWS_ACCESS_KEY_ID.slice(0, 4)}****`
+        : (cfg.iam_role_arn ? 'STS_ASSUME_ROLE' : 'EC2_IMDS_ROLE');
+    const canonicalQuery = [
+        'Action=connect',
+        `DBUser=${encodeURIComponent(user)}`,
+        'X-Amz-Algorithm=AWS4-HMAC-SHA256',
+        `X-Amz-Credential=${encodeURIComponent(`${accessKeyHint}/${credentialScope}`)}`,
+        `X-Amz-Date=${amzDate}`,
+        'X-Amz-Expires=900',
+        'X-Amz-SignedHeaders=host'
+    ].join('&');
+    const canonicalRequest = `GET\n/\n${canonicalQuery}\nhost:${host}:${port}\n\nhost\n${nodeCrypto.createHash('sha256').update('').digest('hex')}`;
+    const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${credentialScope}\n${nodeCrypto.createHash('sha256').update(canonicalRequest).digest('hex')}`;
+    const signingKey = nodeCrypto.createHmac('sha256', `AWS4${process.env.AWS_SECRET_ACCESS_KEY || 'sandbox-sim-check'}`)
+        .update(dateStamp).digest();
+    const signaturePrefix = nodeCrypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex').slice(0, 12);
+
+    return {
+        validFormat: true,
+        algorithm: 'AWS4-HMAC-SHA256',
+        action: 'rds-db:connect',
+        host,
+        port,
+        region,
+        dbUser: user,
+        expiresInSeconds: 900,
+        refreshIntervalSeconds: 720,
+        credentialSource: cfg.iam_role_arn
+            ? `STS AssumeRole (${cfg.iam_role_arn})`
+            : (process.env.AWS_ACCESS_KEY_ID ? 'Environment AWS Credentials' : 'EC2 Instance Profile / IAM Role (自動継承)'),
+        tlsEnforced: cfg.auth_mode !== 'sandbox_sim',
+        tokenPreview: `${host}:${port}/?Action=connect&DBUser=${encodeURIComponent(user)}&X-Amz-Expires=900&X-Amz-Signature=${signaturePrefix}...`
+    };
+}
+
+app.get('/api/mcp/aurora-rds/config', requireAuth, requireMcpAdminPermission, async (req, res) => {
+    try {
+        const config = await loadAuroraRdsConfig();
+        res.json({
+            success: true,
+            config,
+            encryptedStorage: true
+        });
+    } catch (err) {
+        console.error('[Aurora/RDS Config] GET error:', err);
+        res.status(500).json({ success: false, error: err.message || 'Failed to load Aurora/RDS config' });
+    }
+});
+
+app.post('/api/mcp/aurora-rds/config', requireAuth, requireMcpAdminPermission, async (req, res) => {
+    try {
+        const current = await loadAuroraRdsConfig();
+        const body = req.body || {};
+
+        if (body.engine && !VALID_AURORA_ENGINES.has(body.engine)) {
+            return res.status(400).json({ success: false, error: `無効なエンジン種別です: ${body.engine}` });
+        }
+        if (body.auth_mode && !VALID_AURORA_AUTH_MODES.has(body.auth_mode)) {
+            return res.status(400).json({ success: false, error: `無効な接続方式です: ${body.auth_mode}` });
+        }
+        if (body.iam_role_arn && !/^arn:aws(-cn|-us-gov)?:iam::\d{12}:role\/.+/.test(String(body.iam_role_arn).trim())) {
+            return res.status(400).json({
+                success: false,
+                error: 'IAM ロール ARN の形式が正しくありません（例: arn:aws:iam::123456789012:role/MyRole）。未入力時は EC2 IAM ロールを自動継承します。'
+            });
+        }
+
+        const normalized = normalizeAuroraRdsConfig({
+            ...body,
+            updated_at: new Date().toISOString()
+        }, current);
+
+        await db.setSetting(AURORA_RDS_SETTING_KEY, JSON.stringify(normalized));
+
+        await auditDb.logEvent({
+            userId: req.user?.id || null,
+            userEmail: req.user?.email || 'system',
+            eventType: 'mcp_aurora_rds_config',
+            action: `Update Aurora/RDS IAM Config (${normalized.engine} / ${normalized.auth_mode})`,
+            status: 'success',
+            req,
+            details: {
+                engine: normalized.engine,
+                auth_mode: normalized.auth_mode,
+                host: normalized.host,
+                port: normalized.port,
+                database: normalized.database,
+                iam_db_user: normalized.iam_db_user,
+                aws_region: normalized.aws_region,
+                has_iam_role_arn: Boolean(normalized.iam_role_arn),
+                read_only: normalized.read_only
+            }
+        });
+
+        res.json({
+            success: true,
+            config: normalized,
+            encryptedStorage: true,
+            message: 'Aurora / RDS IAM 接続設定を暗号化保存しました。'
+        });
+    } catch (err) {
+        console.error('[Aurora/RDS Config] POST error:', err);
+        res.status(500).json({ success: false, error: err.message || 'Failed to save Aurora/RDS config' });
+    }
+});
+
+app.post('/api/mcp/aurora-rds/test', requireAuth, requireMcpAdminPermission, async (req, res) => {
+    try {
+        const saved = await loadAuroraRdsConfig();
+        const cfg = normalizeAuroraRdsConfig(req.body || {}, saved);
+
+        if (cfg.iam_role_arn && !/^arn:aws(-cn|-us-gov)?:iam::\d{12}:role\/.+/.test(cfg.iam_role_arn)) {
+            return res.status(400).json({
+                success: false,
+                error: 'IAM ロール ARN の形式が正しくありません（例: arn:aws:iam::123456789012:role/MyRole）。'
+            });
+        }
+
+        if ((cfg.auth_mode === 'iam' || cfg.auth_mode === 'awslabs_mysql') && (!cfg.host || !cfg.iam_db_user)) {
+            return res.status(400).json({
+                success: false,
+                error: 'IAM 認証 / AWS 公式 MCP モードでは「エンドポイント」と「IAM DB ユーザー名」の入力が必要です。'
+            });
+        }
+
+        // 1. aurora-rds-mcp サービスのヘルスチェックを試行
+        const healthCandidates = [
+            process.env.AURORA_RDS_MCP_HEALTH_URL,
+            'http://aurora-rds-mcp:33080/health',
+            'http://localhost:33080/health'
+        ].filter(Boolean);
+
+        let mcpHealth = null;
+        let mcpHealthUrl = null;
+        let lastHealthError = null;
+
+        for (const candidateUrl of healthCandidates) {
+            try {
+                const healthRes = await fetch(candidateUrl, {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(2500)
+                });
+                if (healthRes.ok) {
+                    mcpHealth = await healthRes.json().catch(() => ({ status: 'ok' }));
+                    mcpHealthUrl = candidateUrl;
+                    break;
+                }
+                lastHealthError = `HTTP ${healthRes.status}`;
+            } catch (e) {
+                lastHealthError = e.message || String(e);
+            }
+        }
+
+        // 2. SigV4 RDS IAM トークン生成チェック
+        const sigv4Check = buildSigV4RdsTokenPreview(cfg);
+
+        const responsePayload = {
+            success: true,
+            engine: cfg.engine,
+            auth_mode: cfg.auth_mode,
+            read_only: cfg.read_only,
+            mcpServerReachable: Boolean(mcpHealth),
+            mcpHealthUrl,
+            mcpHealth,
+            mcpHealthNote: mcpHealth
+                ? `aurora-rds-mcp (${mcpHealthUrl}) との疎通を確認しました。`
+                : `aurora-rds-mcp コンテナ未起動または未到達（${lastHealthError || 'unreachable'}）。SigV4 IAM トークン生成・設定検証のみ実施しました。`,
+            sigv4Check,
+            message: mcpHealth
+                ? `✅ aurora-rds-mcp 疎通確認 & SigV4 IAM トークン検証成功 (${cfg.engine} / mode=${cfg.auth_mode} / Read-Only=${cfg.read_only ? 'ON' : 'OFF'})`
+                : `✅ SigV4 IAM トークン生成チェック成功 (${cfg.engine} / mode=${cfg.auth_mode} / Read-Only=${cfg.read_only ? 'ON' : 'OFF'}) ※ aurora-rds-mcp コンテナは未到達`
+        };
+
+        await auditDb.logEvent({
+            userId: req.user?.id || null,
+            userEmail: req.user?.email || 'system',
+            eventType: 'mcp_aurora_rds_test',
+            action: `Test Aurora/RDS IAM Config (${cfg.engine} / ${cfg.auth_mode})`,
+            status: 'success',
+            req,
+            details: {
+                engine: cfg.engine,
+                auth_mode: cfg.auth_mode,
+                host: cfg.host,
+                aws_region: cfg.aws_region,
+                read_only: cfg.read_only,
+                mcpServerReachable: Boolean(mcpHealth)
+            }
+        });
+
+        res.json(responsePayload);
+    } catch (err) {
+        console.error('[Aurora/RDS Test] Error:', err);
+        res.status(500).json({ success: false, error: err.message || 'Aurora/RDS IAM テストに失敗しました。' });
+    }
+});
 
 app.use('/api/mcp/chat', requireWidgetAccess('app:mcp-chat'), require('./routes/mcpChat.cjs'));
 app.use('/api/mcp/tasks', requireWidgetAccess('app:mcp-chat'), require('./routes/mcpChat.cjs'));

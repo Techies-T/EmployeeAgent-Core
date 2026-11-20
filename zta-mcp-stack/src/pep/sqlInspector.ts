@@ -138,6 +138,10 @@ export function inspectSqlQuery(rawSql: string): SqlInspectionResult {
     const typeUpper = String(primaryAst.type).toUpperCase();
     switch (typeUpper) {
       case "SELECT":
+      case "SHOW":
+      case "DESC":
+      case "DESCRIBE":
+      case "EXPLAIN":
         actionType = "READ";
         break;
       case "INSERT":

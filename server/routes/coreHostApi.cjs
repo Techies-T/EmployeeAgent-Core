@@ -601,7 +601,8 @@ ${freeSlotsText || 'なし'}
             if (pipelineDomain && pipelineDomain !== 'auto') {
                 const filtered = mcpTools.filter(t => {
                     if (t.domain === pipelineDomain) return true;
-                    if (t.domain === 'catalog' && (pipelineDomain === 'npb_baseball' || pipelineDomain === 'digital_agency')) return true;
+                    if (t.domain === 'catalog' && (pipelineDomain === 'npb_baseball' || pipelineDomain === 'digital_agency' || pipelineDomain === 'aurora_rds')) return true;
+                    if (pipelineDomain === 'aurora_rds' && t.serverName && /aurora|rds/i.test(t.serverName)) return true;
                     return false;
                 });
                 if (filtered.length > 0) mcpTools = filtered;
@@ -610,6 +611,9 @@ ${freeSlotsText || 'なし'}
                 if (msgLower.includes('阪神') || msgLower.includes('タイガース') || msgLower.includes('ホークス') || msgLower.includes('npb') || msgLower.includes('野球') || msgLower.includes('セ・リーグ') || msgLower.includes('パ・リーグ') || msgLower.includes('batting') || msgLower.includes('pitching') || msgLower.includes('war') || msgLower.includes('打者') || msgLower.includes('投手')) {
                     matchedDomains.add('npb_baseball');
                     matchedDomains.add('catalog');
+                }
+                if (msgLower.includes('aurora') || msgLower.includes('rds') || msgLower.includes('mysql') || msgLower.includes('mariadb') || msgLower.includes('sql') || msgLower.includes('データベース') || msgLower.includes('テーブル') || msgLower.includes('スキーマ') || msgLower.includes('schema') || msgLower.includes('iam認証') || msgLower.includes('iam 認証')) {
+                    matchedDomains.add('aurora_rds');
                 }
                 if (msgLower.includes('行政') || msgLower.includes('手続') || msgLower.includes('デジタル庁') || msgLower.includes('マイナンバー') || msgLower.includes('住民票') || msgLower.includes('戸籍') || msgLower.includes('procedures')) {
                     matchedDomains.add('digital_agency');
@@ -624,6 +628,10 @@ ${freeSlotsText || 'なし'}
                 if (matchedDomains.size > 0) {
                     const filtered = mcpTools.filter(t => {
                         if (t.domain && matchedDomains.has(t.domain)) return true;
+                        if (matchedDomains.has('aurora_rds') && (
+                            (t.serverName && /aurora|rds/i.test(t.serverName)) ||
+                            ['list_tables', 'describe_table', 'execute_query', 'run_query', 'get_table_schema', 'check_connection_status'].includes(t.name)
+                        )) return true;
                         if (matchedDomains.has('knowledge_base') && (t.name.includes('knowledge') || t.name.includes('author') || t.name.includes('post') || t.name.includes('crosstab'))) return true;
                         if (matchedDomains.has('npb_baseball') && (t.name.includes('query') || t.name.includes('sql') || t.name.includes('table') || t.name.includes('catalog'))) return true;
                         if (matchedDomains.has('digital_agency') && (t.name.includes('procedures') || t.name.includes('records') || t.name.includes('catalog'))) return true;
