@@ -123,13 +123,45 @@ async function verifyCosignSignature(imageRef, repository) {
 
     const identityRegexp = `^https://github\\.com/${repository.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/\\.github/workflows/release-signed-plugin\\.yml@.*$`;
     try {
-        await execFileAsync('cosign', [
+        const { stdout } = await execFileAsync('cosign', [
             'verify',
             '--certificate-oidc-issuer', 'https://token.actions.githubusercontent.com',
             '--certificate-identity-regexp', identityRegexp,
             imageRef
         ], { timeout: 30000, maxBuffer: 5 * 1024 * 1024 });
-        return { verified: true, issuer: 'https://token.actions.githubusercontent.com', identityRegexp };
+
+        let subject = null;
+        let issuer = 'https://token.actions.githubusercontent.com';
+        let rekorLogIndex = null;
+        let signedAt = null;
+        let manifestDigest = null;
+        try {
+            const parsed = JSON.parse(String(stdout || '').trim());
+            const entry = Array.isArray(parsed) ? parsed[0] : parsed;
+            const opt = entry?.optional || {};
+            subject = opt.Subject || opt.subject || null;
+            if (opt.Issuer || opt.issuer) issuer = opt.Issuer || opt.issuer;
+            const bundlePayload = opt.Bundle?.Payload || {};
+            if (bundlePayload.logIndex !== undefined) rekorLogIndex = bundlePayload.logIndex;
+            if (bundlePayload.integratedTime) {
+                signedAt = new Date(Number(bundlePayload.integratedTime) * 1000).toISOString();
+            }
+            manifestDigest = entry?.critical?.image?.['docker-manifest-digest'] || null;
+        } catch {
+            // Best-effort metadata parse; verification itself already succeeded
+        }
+
+        return {
+            verified: true,
+            issuer,
+            subject: subject || `https://github.com/${repository}/.github/workflows/release-signed-plugin.yml`,
+            repository,
+            imageRef,
+            manifestDigest,
+            rekorLogIndex,
+            signedAt,
+            verifiedAt: new Date().toISOString()
+        };
     } catch (err) {
         const msg = err.stderr || err.message || 'Cosign verification failed';
         throw new Error(`コンテナイメージの Cosign 証明書検証に失敗しました: ${msg.slice(0, 300)}`);

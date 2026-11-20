@@ -676,7 +676,15 @@ async function getFullPluginCatalog() {
             manifestUrl: state.manifestUrl || (effectiveServiceUrl ? `${effectiveServiceUrl.replace(/\/$/, '')}/widget.manifest.json` : null),
             proxyBasePath,
             entrypoints: resolvedEntrypoints,
+            author: state.verifiedManifest?.author || widget.author || 'Techies Inc.',
             signatureVerification: state.signatureVerification || null,
+            containerVerification: state.containerVerification || null,
+            manifestIntegrity: state.verifiedManifest?.integrity ? {
+                signedAt: state.verifiedManifest.integrity.signedAt || null,
+                keyEnvironment: state.verifiedManifest.integrity.keyEnvironment || null,
+                fileCount: Object.keys(state.verifiedManifest.integrity.bundleFilesSha256 || {}).length
+            } : null,
+            manifestSignatures: state.verifiedManifest?.signatures || null,
             packageName: widget.packageId || widget.packageName || `com.techies.widget.${widget.id}`,
             description: widget.shortDescription || widget.description || '',
             pricingLabel: typeof widget.pricing === 'object' ? (widget.pricing?.label || '') : (widget.pricing || ''),
@@ -768,6 +776,7 @@ async function installWidgetPlugin(widgetId, options = {}) {
 
     let resolvedManifest = customManifest;
     let signatureVerification = null;
+    let containerVerification = null;
     let resolvedServiceUrl = serviceUrl ? serviceUrl.replace(/\/$/, '') : '';
     let resolvedManifestUrl = manifestUrl ? manifestUrl.trim() : '';
 
@@ -827,6 +836,8 @@ async function installWidgetPlugin(widgetId, options = {}) {
                     const errBody = await upRes.json().catch(() => ({}));
                     throw new Error(errBody.error || `ea-plugin-updater によるコンテナ自動インストールに失敗しました (HTTP ${upRes.status})`);
                 }
+                const upData = await upRes.json().catch(() => ({}));
+                containerVerification = upData.cosign || null;
                 verified = await fetchAndVerifyExternalManifest(resolvedManifestUrl, req);
             } else {
                 throw initialFetchErr;
@@ -927,6 +938,7 @@ async function installWidgetPlugin(widgetId, options = {}) {
         manifestUrl: resolvedManifestUrl || null,
         verifiedManifest: resolvedManifest || null,
         signatureVerification,
+        containerVerification,
         source: resolvedManifest ? 'pqc_signed_external_plugin' : 'dynamic_registry'
     };
 
@@ -1234,12 +1246,16 @@ async function updateWidgetPlugin(widgetId, req = null) {
             const errText = errJson?.error || (await upRes.text().catch(() => ''));
             throw new Error(`Updater service failed (${upRes.status}): ${errText}`);
         }
+        const upData = await upRes.json().catch(() => ({}));
 
         const { remoteManifest, signatureVerification } = await fetchAndVerifyExternalManifest(widget.manifestUrl, req);
         const installedMap = await getInstalledPluginsMap();
         if (installedMap[widgetId]) {
             installedMap[widgetId].verifiedManifest = remoteManifest;
             installedMap[widgetId].signatureVerification = signatureVerification;
+            if (upData.cosign) {
+                installedMap[widgetId].containerVerification = upData.cosign;
+            }
             installedMap[widgetId].updatedAt = new Date().toISOString();
             await saveInstalledPluginsMap(installedMap);
         }

@@ -83,6 +83,7 @@ const WidgetStoreTab = ({
     const [loading, setLoading] = useState(true);
     const [licenseInputMap, setLicenseInputMap] = useState({});
     const [serviceUrlInputMap, setServiceUrlInputMap] = useState({});
+    const [expandedCertMap, setExpandedCertMap] = useState({});
     const [customManifestUrl, setCustomManifestUrl] = useState('');
     const [installingCustom, setInstallingCustom] = useState(false);
     const [generatedKeyInfo, setGeneratedKeyInfo] = useState(null);
@@ -452,15 +453,119 @@ const WidgetStoreTab = ({
                                         <p className="text-xs text-gray-600 mt-2 leading-relaxed">
                                             {widget.description || widget.shortDescription}
                                         </p>
-                                        {widget.signatureVerification?.valid && (
-                                            <div className="mt-2.5 p-2 rounded-lg bg-emerald-50/90 border border-emerald-200 flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-emerald-900">
-                                                <span className="font-bold flex items-center gap-1">
-                                                    <span>🛡️</span>
-                                                    <span>PQC Hybrid Verified ({widget.signatureVerification.pqcAlgorithm} + {widget.signatureVerification.classicalAlgorithm})</span>
-                                                </span>
-                                                <span className="font-mono text-emerald-700">
-                                                    SHA256: {String(widget.signatureVerification.canonicalPayloadSha256 || '').substring(0, 12)}…
-                                                </span>
+                                        {(widget.signatureVerification?.valid || widget.containerVerification?.verified) && (
+                                            <div className="mt-2.5 rounded-lg bg-emerald-50/90 border border-emerald-200 text-[10px] text-emerald-900 overflow-hidden">
+                                                <div className="p-2 flex flex-wrap items-center justify-between gap-1.5">
+                                                    <span className="font-bold flex items-center gap-1">
+                                                        <span>🛡️</span>
+                                                        <span>
+                                                            {widget.signatureVerification?.valid
+                                                                ? `PQC Hybrid Verified (${widget.signatureVerification.pqcAlgorithm} + ${widget.signatureVerification.classicalAlgorithm})`
+                                                                : 'Cosign Container Verified'}
+                                                            {widget.containerVerification?.verified ? ' · Cosign OIDC' : ''}
+                                                        </span>
+                                                    </span>
+                                                    <div className="flex items-center gap-2">
+                                                        {widget.signatureVerification?.canonicalPayloadSha256 && (
+                                                            <span className="font-mono text-emerald-700 hidden sm:inline">
+                                                                SHA256: {String(widget.signatureVerification.canonicalPayloadSha256).substring(0, 12)}…
+                                                            </span>
+                                                        )}
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setExpandedCertMap(prev => ({ ...prev, [widget.id]: !prev[widget.id] }))}
+                                                            className="px-2 py-0.5 rounded bg-white/90 hover:bg-white text-emerald-800 border border-emerald-300 font-semibold cursor-pointer transition"
+                                                        >
+                                                            {expandedCertMap[widget.id] ? '▲ 閉じる' : '📜 証明書詳細'}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                {expandedCertMap[widget.id] && (
+                                                    <div className="px-2.5 pb-2.5 pt-2 border-t border-emerald-200/80 bg-white/80 space-y-2 text-[10px] text-gray-700">
+                                                        <div>
+                                                            <div className="font-bold text-emerald-900 mb-1">1. コンテナ証明書（Sigstore Cosign / GitHub OIDC）</div>
+                                                            {widget.containerVerification?.verified ? (
+                                                                <dl className="grid grid-cols-[110px_1fr] gap-y-0.5 gap-x-2 font-mono text-[10px] break-all">
+                                                                    <dt className="text-gray-500 font-sans">発行元 (Issuer)</dt>
+                                                                    <dd>{widget.containerVerification.issuer}</dd>
+                                                                    <dt className="text-gray-500 font-sans">作成元 (Subject)</dt>
+                                                                    <dd>{widget.containerVerification.subject}</dd>
+                                                                    <dt className="text-gray-500 font-sans">検証済みイメージ</dt>
+                                                                    <dd>{widget.containerVerification.imageRef || widget.containerVerification.manifestDigest || '-'}</dd>
+                                                                    {widget.containerVerification.rekorLogIndex !== null && widget.containerVerification.rekorLogIndex !== undefined && (
+                                                                        <>
+                                                                            <dt className="text-gray-500 font-sans">透明性ログ (Rekor)</dt>
+                                                                            <dd>
+                                                                                <a
+                                                                                    href={`https://search.sigstore.dev/?logIndex=${encodeURIComponent(widget.containerVerification.rekorLogIndex)}`}
+                                                                                    target="_blank"
+                                                                                    rel="noopener noreferrer"
+                                                                                    className="text-indigo-600 hover:underline"
+                                                                                >
+                                                                                    Log #{widget.containerVerification.rekorLogIndex} ↗
+                                                                                </a>
+                                                                            </dd>
+                                                                        </>
+                                                                    )}
+                                                                    {widget.containerVerification.verifiedAt && (
+                                                                        <>
+                                                                            <dt className="text-gray-500 font-sans">検証日時</dt>
+                                                                            <dd>{new Date(widget.containerVerification.verifiedAt).toLocaleString('ja-JP')}</dd>
+                                                                        </>
+                                                                    )}
+                                                                </dl>
+                                                            ) : (
+                                                                <div className="text-gray-500">
+                                                                    次回の Store Update / 再インストール時に Sigstore Cosign（GitHub OIDC）証明書メタデータが記録されます。
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        {widget.signatureVerification?.valid && (
+                                                            <div className="pt-1.5 border-t border-gray-200/70">
+                                                                <div className="font-bold text-emerald-900 mb-1">2. アプリ層 耐量子ハイブリッド署名（PQC Hybrid）</div>
+                                                                <dl className="grid grid-cols-[110px_1fr] gap-y-0.5 gap-x-2 font-mono text-[10px] break-all">
+                                                                    <dt className="text-gray-500 font-sans">発行者 (Publisher)</dt>
+                                                                    <dd className="font-sans font-semibold text-gray-800">{widget.author || 'Techies Inc.'}</dd>
+                                                                    <dt className="text-gray-500 font-sans">鍵環境</dt>
+                                                                    <dd>{widget.manifestIntegrity?.keyEnvironment === 'production' ? 'production (AWS KMS FIPS 140-3 HSM)' : (widget.manifestIntegrity?.keyEnvironment || 'development')}</dd>
+                                                                    <dt className="text-gray-500 font-sans">古典署名鍵</dt>
+                                                                    <dd>{widget.manifestSignatures?.publisherHybrid?.classical?.keyId || widget.signatureVerification.classicalKeyId || widget.signatureVerification.classicalAlgorithm}</dd>
+                                                                    <dt className="text-gray-500 font-sans">耐量子署名鍵</dt>
+                                                                    <dd>{widget.manifestSignatures?.publisherHybrid?.pqc?.keyId || widget.signatureVerification.pqcKeyId || widget.signatureVerification.pqcAlgorithm}</dd>
+                                                                    <dt className="text-gray-500 font-sans">Canonical SHA-256</dt>
+                                                                    <dd>{widget.signatureVerification.canonicalPayloadSha256}</dd>
+                                                                    {widget.manifestIntegrity?.fileCount > 0 && (
+                                                                        <>
+                                                                            <dt className="text-gray-500 font-sans">検証ファイル数</dt>
+                                                                            <dd>{widget.manifestIntegrity.fileCount} files (SHA-256 verified)</dd>
+                                                                        </>
+                                                                    )}
+                                                                    {widget.manifestIntegrity?.signedAt && (
+                                                                        <>
+                                                                            <dt className="text-gray-500 font-sans">署名日時</dt>
+                                                                            <dd>{new Date(widget.manifestIntegrity.signedAt).toLocaleString('ja-JP')}</dd>
+                                                                        </>
+                                                                    )}
+                                                                    {widget.repository && (
+                                                                        <>
+                                                                            <dt className="text-gray-500 font-sans">公式リポジトリ</dt>
+                                                                            <dd>
+                                                                                <a
+                                                                                    href={`https://github.com/${widget.repository}`}
+                                                                                    target="_blank"
+                                                                                    rel="noopener noreferrer"
+                                                                                    className="text-indigo-600 hover:underline"
+                                                                                >
+                                                                                    github.com/{widget.repository} ↗
+                                                                                </a>
+                                                                            </dd>
+                                                                        </>
+                                                                    )}
+                                                                </dl>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
                                         {updatingMap[widget.id] === 'updating' && (
