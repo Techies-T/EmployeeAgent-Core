@@ -951,7 +951,37 @@ async function installWidgetPlugin(widgetId, options = {}) {
  */
 async function uninstallWidgetPlugin(widgetId) {
     const installedMap = await getInstalledPluginsMap();
-    if (installedMap[widgetId]) {
+    const catalogItem = WIDGET_CATALOG.find(w => w.id === widgetId) || null;
+
+    // If this is a managed container widget and ea-plugin-updater is available, stop & remove the container cleanly
+    const updaterUrl = process.env.PLUGIN_UPDATER_URL;
+    if (updaterUrl && (catalogItem?.deploymentType === 'container' || catalogItem?.isExternalPlugin)) {
+        try {
+            const upRes = await fetch(`${updaterUrl.replace(/\/$/, '')}/uninstall`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${createUpdaterA2AToken(widgetId, 'uninstall')}`
+                },
+                signal: AbortSignal.timeout(30000),
+                body: JSON.stringify({ widgetId })
+            });
+            if (!upRes.ok) {
+                console.warn(`[PluginManager] ea-plugin-updater /uninstall returned HTTP ${upRes.status} for ${widgetId}`);
+            }
+        } catch (upErr) {
+            console.warn(`[PluginManager] Could not call ea-plugin-updater /uninstall for ${widgetId}:`, upErr.message);
+        }
+    }
+
+    if (DEFAULT_INSTALLED_IDS.includes(widgetId)) {
+        // Keep explicit tombstone so getInstalledPluginsMap() does not re-seed it back as installed: true
+        installedMap[widgetId] = {
+            installed: false,
+            uninstalledAt: new Date().toISOString()
+        };
+        await saveInstalledPluginsMap(installedMap);
+    } else if (installedMap[widgetId]) {
         delete installedMap[widgetId];
         await saveInstalledPluginsMap(installedMap);
     }
