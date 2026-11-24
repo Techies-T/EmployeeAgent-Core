@@ -12,11 +12,52 @@ services:
       - ${ENV_FILE:-server/staging.env}
     environment:
       - NODE_OPTIONS=--max-old-space-size=384
+      - MCP_CHAT_PLUGIN_URL=http://ea-widget-mcp-chat:8092
+      - VIRTUAL_OFFICE_PLUGIN_URL=http://ea-widget-virtual-office:8091
+      - EA_CORE_INTERNAL_URL=http://macosui-web:8080
+      - PLUGIN_UPDATER_URL=http://ea-plugin-updater:8099
     ports:
       - "8080:8080"
     extra_hosts:
       - "macosui-staging.techiespod.co.jp:host-gateway"
       - "host.docker.internal:host-gateway"
+
+  mcp-chat-plugin:
+    image: ghcr.io/techies-t/ea-widget-mcp-chat:v1.1.0
+    container_name: ea-widget-mcp-chat
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8092:8092"
+    env_file:
+      - ${ENV_FILE:-server/staging.env}
+    environment:
+      - PORT=8092
+      - DATA_DIR=/app/data
+      - EA_CORE_INTERNAL_URL=http://macosui-web:8080
+      - NODE_ENV=production
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  plugin-updater:
+    build:
+      context: ./plugin-updater
+      dockerfile: Dockerfile
+    image: techies-t/ea-plugin-updater:latest
+    container_name: ea-plugin-updater
+    restart: unless-stopped
+    env_file:
+      - ${ENV_FILE:-server/staging.env}
+    environment:
+      - PORT=8099
+      - CORE_CONTAINER_NAME=macosui-web
+      - VERIFY_COSIGN=${VERIFY_COSIGN:-true}
+      - NODE_ENV=production
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - web
 
   nginx:
     # Patched against nginx2root (CVE-2026-123007, CVE-2026-123633, CVE-2026-123634)
