@@ -1,14 +1,28 @@
-# 🛡️ EmployeeAgent-Core (EA-Core v1.0.0)
+# 🛡️ EmployeeAgent-Core (EA-Core v1.3.0)
 
-**Zero Trust Architecture (ZTA) 準拠・エンタープライズ AI エージェント デスクトップ OS & MCP データ分析プラットフォーム**
+**Zero Trust Architecture (ZTA) 準拠・エンタープライズ AI エージェント デスクトップ OS & モジュラー MCP プラットフォーム**
 
-[![Version](https://img.shields.io/badge/version-EA--Core%201.0.0-blue.svg)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-EA--Core%201.3.0-blue.svg)](./CHANGELOG.md)
 [![Architecture](https://img.shields.io/badge/Security-Zero%20Trust%20(NIST%20SP%20800--207)-emerald.svg)](#1-ea-core-とは何か--ea-core-でできること)
 [![Protocol](https://img.shields.io/badge/MCP-OAuth%202.0%20JWT%20%2B%20SSE-purple.svg)](#3-同梱-mcp-サンプルデータnpb-プロ野球--デジタル庁-行政手続データ)
+[![SupplyChain](https://img.shields.io/badge/Plugin%20Security-PQC%20Hybrid%20%2B%20Cosign%20OIDC-indigo.svg)](#macosui-community-から移行される方へモジュラー構成への進化)
 
-**EmployeeAgent-Core (`EA-Core`)** は、企業内のデータベース・業務システム・社内ナレッジを **Zero Trust Architecture (ZTA)** の厳格なガバナンス下で AI エージェント（Google Gemini / Anthropic Claude / ローカル LLM Gemma 4）と安全に接続し、自然言語によるデータ分析・インタラクティブ可視化（GenUI ダッシュボード生成）・経営会議ブリーフィングまでを一貫して行える Web デスクトップ OS 環境です。
+**EmployeeAgent-Core (`EA-Core`)** は、企業内のデータベース（MariaDB / **AWS Aurora MySQL / AWS RDS MariaDB・MySQL [IAM 認証]**）・業務システム・社内ナレッジを **Zero Trust Architecture (ZTA)** の厳格なガバナンス下で AI エージェント（Google Gemini / Anthropic Claude / ローカル LLM Gemma 4）と安全に接続する Web デスクトップ OS 基盤です。
 
-本リポジトリには **EA-Core 本体** に加え、**ZTA-MCP-Gateway（SQL ファイアウォール＆データカタログ整合性検証プロキシ）** およびすぐに試せる **2種類の公式サンプル MCP サーバー（NPB プロ野球 2024〜2026 公式戦 MariaDB & デジタル庁 行政手続等棚卸調査データ）** が同梱されており、Fork / Clone して **1コマンド** でフルスタック環境を体験できます。
+---
+
+## 🔄 `MacOSUI-Community` から移行される方へ（モジュラー構成への進化）
+
+以前の **`MacOSUI-Community`** は、チャット・MCP クライアント・各種業務アプリがすべて 1 つに同梱された **モノリシック構成** でした。
+現在の **`EmployeeAgent-Core (EA-Core)`** では、保守性・セキュリティ・独立バージョンアップ性を高めるため、以下の **シンプルコア ＋ プラグイン Store 構成** へ進化しています：
+
+| 区分 | コンポーネント | 役割・インストール方法 |
+| :--- | :--- | :--- |
+| **ベース構成（最初に EC2 へ導入）** | **`EA-Core` 本体**（ノーマルチャット ＋ ナレッジ＆RAG 機能）<br>**`ZTA-MCP-Gateway`**（OAuth JWT ＋ SQL ファイアウォール）<br>**`ea-plugin-updater`**（Store からのワンクリック導入・VUP サイドカー）<br>**`aurora-rds-mcp`**（AWS Aurora / RDS IAM 認証 MCP サーバー） | 本リポジトリ（`EmployeeAgent-Core`）を EC2 へ 1 度セットアップするだけで稼働します。 |
+| **独立ウィジェット（Store から必要に応じて追加）** | 🔌 **[ea-widget-mcp-chat](https://github.com/Techies-T/ea-widget-mcp-chat)**（ZTA MCP データ分析クライアント）<br>🏢 **[ea-widget-virtual-office](https://github.com/Techies-T/ea-widget-virtual-office)**（バーチャルオフィス & DM）<br>その他アドオンウィジェット | **EC2 へのコマンド入力は不要** です。<br>管理画面の **「⚙️ System Settings」 ➔ 「🧩 Widget Store」** からワンクリックで **インストール・アップデート（VUP）・解除** できます（Sigstore Cosign 証明書検証 ＋ PQC Hybrid 署名検証＋失敗時自動ロールバック対応）。 |
+
+> [!TIP]
+> 各ウィジェットの詳細仕様や個別開発手順は、上記の各ウィジェットリポジトリの `README.md` をご参照ください。お客様環境への導入は **「まず EC2 に EA-Core ベースを入れる ➔ あとはブラウザの Widget Store から必要なウィジェットを入れる」** という流れで統一できます。
 
 ---
 
@@ -204,27 +218,48 @@ bash scripts/deploy-staging.sh
 
 ---
 
-## 7. AWS (EC2) へのデプロイ手順
+## 7. AWS (EC2) へのインストール・デプロイ手順
 
-AWS EC2（Amazon Linux 2023 または Ubuntu 22.04/24.04、EBS 永続ボリューム `/app/data` マウント構成推奨）向けのデプロイ＆アップデートスクリプト（[`scripts/deploy-ec2.sh`](./scripts/deploy-ec2.sh)）を用意しています。
+AWS EC2（Amazon Linux 2023 または Ubuntu 22.04/24.04、EBS 永続ボリューム `/app/data` マウント・前段 CloudFront / ALB 構成・**SSH 不要の SSM Session Manager 接続推奨**）へ、`EA-Core`・`ZTA-MCP-Gateway`・`ea-plugin-updater`・`aurora-rds-mcp` を導入する手順です。
 
-### Step 1: EC2 インスタンスの準備（初回のみ）
-1. EC2 インスタンスを作成し、セキュリティグループで **80 / 443**（または ALB 経由で **8080**）と **22 (SSH)** を許可します。
-2. 永続データ保護用のディレクトリ（推奨: `/app/data`）を作成し、リポジトリを `/opt/macosui/repo` に Clone します。
+### Step 1: EC2 インスタンスへ接続してリポジトリを配置（初回のみ）
+1. AWS コンソール（CloudShell / Systems Manager Session Manager）から EC2 へ接続します（22 番 SSH ポートの開放は不要です）。
+2. 永続データ用ディレクトリ `/app/data` と配置先 `/opt/macosui/repo` を準備して Clone します。
 
 ```bash
 sudo mkdir -p /app/data /opt/macosui
-sudo chown -R $(whoami):$(whoami) /app/data /opt/macosui
-git clone https://github.com/<あなたのGitHubアカウント>/EmployeeAgent-Core.git /opt/macosui/repo
+sudo chown -R $(id -un):$(id -gn) /app/data /opt/macosui
+git clone https://github.com/Techies-T/EmployeeAgent-Core.git /opt/macosui/repo
 ```
 
-### Step 2: デプロイスクリプトの実行
-EC2 インスタンス上で以下のコマンドを実行すると、`/app/data` のシンボリックリンク保護・暗号化キー自動生成・`EA-Core + ZTA-MCP-Gateway + MariaDB (NPB) + デジタル庁 MCP` の全コンテナ起動と NPB データ投入が完了します。
-
+### Step 2: ベース環境（EA-Core + ZTA-MCP-Gateway + Plugin Updater + Aurora/RDS MCP）を起動
 ```bash
 cd /opt/macosui/repo
+
+# 初回フルセットアップ（暗号化キー生成・DB 初期化・サンプル MCP 含む起動）
 bash scripts/deploy-ec2.sh
+
+# 併せて Store ワンクリック導入用サイドカーと Aurora/RDS MCP を起動
+sudo docker compose -f docker-compose.full.yml up -d --build --no-deps --force-recreate macosui zta-gateway plugin-updater aurora-rds-mcp
 ```
+
+起動確認：
+```bash
+sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+```
+`macosui-local`・`zta-mcp-gateway`・`ea-plugin-updater`・`aurora-rds-mcp` が `Up` になっていればベース導入完了です。
+
+### Step 3: Widget Store から MCP チャット等の各種ウィジェットを導入（コマンド不要）
+1. ブラウザで EA-Core にアクセスして初期 Activation を完了します（[セクション 8](#8-初期-activationアクティベーションの仕方とソフトウェアのアップデートvup方法) 参照）。
+2. **「⚙️ System Settings」 ➔ 「🧩 Widget Store」** を開きます。
+3. **「MCP クライアント (`ea-widget-mcp-chat`)」** や **「バーチャルオフィス (`ea-widget-virtual-office`)」** など、利用したいウィジェットの **「インストール」**（または **「🔄 更新確認 ➔ ⬆️ Update」**）をクリックします。
+   - `ea-plugin-updater` が **Sigstore Cosign（GitHub OIDC）証明書検証 ➔ GHCR から自動 Pull ➔ コンテナ起動＆ヘルスチェック ➔ PQC Hybrid 署名検証** まで全自動で実行します。
+   - 導入後は各ウィジェットカードの **「📜 証明書詳細」** からビルド元ワークフローや Rekor 透明性ログを確認できます。
+
+### Step 4: お客様の AWS Aurora / RDS（IAM 認証）を接続する場合
+1. AWS 側の IAM ロール（`rds-db:connect`）と DB ユーザー（`AWSAuthenticationPlugin`）を設定します。詳細な手順・ポリシー JSON・SQL は [`zta-mcp-stack/docs/aurora-rds-iam-setup.md`](./zta-mcp-stack/docs/aurora-rds-iam-setup.md) を参照してください。
+2. ブラウザの **「⚙️ System Settings」 ➔ 「🔌 MCP サーバー接続設定」 ➔ 「+ Aurora / RDS (IAM 認証)」** を開き、エンドポイント・DB 名・IAM ユーザー名・ZTA Gateway 認証情報を入力して **Test Connection ➔ Save Connection** をクリックします。
+3. テスト環境で AWS 課金なしで試す場合は、接続方式を **`sandbox_sim`** にするとローカルのシミュレーションモードですぐに動作確認できます。
 
 ---
 

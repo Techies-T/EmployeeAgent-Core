@@ -3,6 +3,57 @@
 本プロジェクトのすべての主要な変更履歴は本ファイルに記録されます。
 フォーマットは [Keep a Changelog](https://keepachangelog.com/ja/1.0.0/) に準拠し、バージョン番号は [セマンティック バージョニング](https://semver.org/lang/ja/) に従います。
 
+## [EA-Core v1.3.0] - 2026-11-24
+
+### 🗄️ AWS Aurora / RDS (IAM 認証) 統合・証明書来歴ビュー・依存脆弱性ゼロ化
+
+#### 🔐 AWS Aurora (MySQL互換) / RDS (MariaDB・MySQL) IAM 認証 MCP 対応
+- **独立 MCP サーバー新設 (`zta-mcp-stack/services/aurora-rds-mcp/`)**:
+  - ZTA 準拠 SSE トランスポート（`GET /sse`, `POST /message`, `GET /health` / Port `33080`）で稼働する `aurora-rds-mcp` を新設。
+  - `@aws-sdk/rds-signer` による 15 分有効の SigV4 IAM 認証トークン生成・12 分間隔サイレントリフレッシュ・EC2 IAM ロール自動継承＆STS AssumeRole・Amazon RDS グローバル CA による TLS 強制接続に対応。
+  - 接続モード 3 種（`iam` 本番 / `awslabs_mysql` AWS 公式 `awslabs.mysql-mcp-server` ブリッジ / `sandbox_sim` ローカル 0 円シミュレーション）と Read-Only SQL ガードを実装。
+  - MariaDB 予約語（`current_user`）によるヘルスチェック SQL 構文エラーを修正（`db_current_user`）。
+  - お客様向け導入手順書（`zta-mcp-stack/docs/aurora-rds-iam-setup.md`）および RDS `db.t4g.micro` ワンショット検証＆即削除スクリプト（`zta-mcp-stack/scripts/test-rds-iam-oneshot.sh`）を追加。
+- **ZTA-MCP-Gateway 拡張 (`zta-mcp-stack/src/`, `zta-mcp-stack/config/`, `docker-compose.full.yml`)**:
+  - 上流 SSE プロキシ（`src/proxy/upstreamClient.ts`）を追加し、`/mcp/aurora-rds/sse` ルート・OAuth JWT `read_only` スコープ狭小化・AST SQL ファイアウォール（`SHOW`/`DESCRIBE`/`EXPLAIN` 許可＋変更系 SQL 遮断）を統合。
+  - `server/routes/mcpServers.cjs` で Docker 内部 ZTA Gateway ホスト名（`zta-mcp-gateway`, `aurora-rds-mcp` 等）を許可。
+- **管理画面 UI & API (`src/apps/SystemSettings/tabs/McpConnectionsTab.jsx`, `server/index.cjs`, `server/mcpClient.cjs`, `server/routes/coreHostApi.cjs`)**:
+  - 「+ Aurora / RDS (IAM 認証)」接続フォーム・ZTA Gateway ワンクリックプリセット・設定の AES-256-GCM 暗号化保存 API（`GET/POST /api/mcp/aurora-rds/config`）・疎通確認 API（`POST /api/mcp/aurora-rds/test`）・ツールルーティング拡張を追加。
+
+#### 📜 Widget Store 証明書詳細ビュー & ライフサイクル改善 (`plugin-updater/server.cjs`, `server/services/pluginManager.cjs`, `src/apps/SystemSettings/tabs/WidgetStoreTab.jsx`)
+- **証明書・来歴詳細パネル（「📜 証明書詳細」）**:
+  - `cosign verify` の検証結果から **Sigstore Cosign（GitHub OIDC Issuer / 作成元ワークフロー Subject / イメージダイジェスト / Rekor 透明性ログリンク）** を抽出・保存し、PQC Hybrid 署名メタデータとあわせて Store 画面から確認可能に。
+- **アップデート進捗バナー & アンインストール改善**:
+  - Store からのコンテナ Update 実行中に進捗バナー（所要時間目安・自動検証ステップ表示）を表示。
+  - 標準搭載ウィジェットの「解除」時に自動再シードで復活してしまう不具合を修正し、`ea-plugin-updater` によるコンテナの自動停止・削除にも対応。
+
+#### 🛡️ セキュリティ監査（脆弱性ゼロ達成）
+- `EmployeeAgent-Core` および `zta-mcp-stack` の間接依存 `hono`（Moderate）を `npm audit fix` で解消し、全関連コンポーネントで本番依存の脆弱性 0 件を達成。
+
+---
+
+## [EA-Core v1.2.0] - 2026-11-20
+
+### 🚀 Zero-Trust ワンクリック導入サイドカー (`ea-plugin-updater`) ＆ NGINX「nginx2root」対策
+- **`ea-plugin-updater` サイドカー新設 (`plugin-updater/`, `docker-compose.full.yml`, `server/services/pluginManager.cjs`)**:
+  - `macosui-local` 本体から Docker ソケットを分離した内部専用サイドカーを新設（A2A JWT 認証・許可イメージ prefix 固定・Sigstore Cosign 証明書検証・GHCR 自動 Pull・ヘルスチェック＆失敗時自動ロールバック）。
+  - Store 画面からのコマンド不要なワンクリック Install / Update（VUP）に対応。
+- **NGINX 脆弱性（2026年11月18日公開「nginx2root」/ CVE-2026-123007, 123633, 123634）対策**:
+  - `docker-compose.staging.yml` の NGINX イメージを修正済み **`nginx:1.30.7-alpine`** へ固定、`server/nginx/nginx.conf` に `http2 off;` を明示。
+- **AI モデル一覧全件取得 & iframe 別タブ修正**:
+  - `/api/gemini/models` および `listClaudeModels` のページネーションを全件取得対応とし、API で利用可能なすべてのモデルを Admin 設定画面で選択可能に改善。
+  - `PluginHostFrame.jsx` の iframe `sandbox` に `allow-popups allow-popups-to-escape-sandbox` を追加し、プラグイン内からの「別タブ」プレビューに対応。
+
+---
+
+## [EA-Core v1.1.0] - 2026-11-19
+
+### 🔌 MCP チャットクライアントの外部コンテナプラグイン分離 (`ea-widget-mcp-chat`)
+- MCP チャットクライアントを独立リポジトリ `Techies-T/ea-widget-mcp-chat`（Port `8092`）へ分離し、EA-Core Host API 経由での連携および単独デプロイスクリプト（`scripts/deploy-mcp-chat.sh`）を追加。
+- `/api/gemini/models` での Admin モデル一覧取得権限と `AiHubTab.jsx` のリフレッシュフィードバックを改善。
+
+---
+
 ## [EA-Core v1.0.2] - 2026-11-13
 
 ### 🧩 PQC 署名付き外部ウィジェット分離・Dock アイコン復元・MCP 監査ログ検知強化
