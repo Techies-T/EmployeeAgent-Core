@@ -28,7 +28,11 @@ function validateZtaUrls(endpointUrl, tokenUrl, connectionMode = 'zta_gateway') 
             }
             const isLocal = parsed.hostname === 'localhost' || 
                             parsed.hostname === '127.0.0.1' || 
-                            parsed.hostname === 'host.docker.internal';
+                            parsed.hostname === 'host.docker.internal' ||
+                            parsed.hostname === 'zta-mcp-gateway' ||
+                            parsed.hostname === 'aurora-rds-mcp' ||
+                            parsed.hostname === 'mariadb-mcp' ||
+                            parsed.hostname === 'admin-procedures-mcp';
             if (isLocal) {
                 return true;
             }
