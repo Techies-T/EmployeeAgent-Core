@@ -227,12 +227,12 @@ class AuroraRdsPoolManager {
       await this.tokenManager.getToken();
       const pool = await this.ensurePool();
       const [rows] = await pool.query(
-        "SELECT 1 AS ok, VERSION() AS version, CURRENT_USER() AS current_user"
+        "SELECT 1 AS ok, VERSION() AS version, CURRENT_USER() AS db_current_user"
       );
       if (Array.isArray(rows) && rows.length > 0) {
         dbConnected = rows[0].ok === 1 || String(rows[0].ok) === "1";
         serverVersion = rows[0].version || null;
-        currentUser = rows[0].current_user || null;
+        currentUser = rows[0].db_current_user || null;
       }
     } catch (err) {
       dbError = err.message;
